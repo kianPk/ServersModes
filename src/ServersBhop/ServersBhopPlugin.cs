@@ -21,7 +21,7 @@ namespace ServersModes.Bhop;
 public sealed partial class ServersBhopPlugin : BasePlugin
 {
     public override string ModuleName => "Servers BHOP";
-    public override string ModuleVersion => "1.1.1";
+    public override string ModuleVersion => "1.1.2";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Bunny hop with a timer, records and the map rotation.";
 
@@ -129,6 +129,7 @@ public sealed partial class ServersBhopPlugin : BasePlugin
             ApplyRules();
         });
         RegisterListener<Listeners.OnTick>(OnTick);
+        AddTimer(1f, RespawnDead, TimerFlags.REPEAT);
         RegisterEventHandler<EventRoundStart>((_, _) =>
         {
             ApplyRules();
@@ -531,6 +532,19 @@ public sealed partial class ServersBhopPlugin : BasePlugin
         }
 
         return HookResult.Continue;
+    }
+
+    // Rounds never end here, so a player who joins a side mid-round would
+    // otherwise wait forever for the next one to spawn.
+    private static void RespawnDead()
+    {
+        foreach (var player in Players.Humans())
+        {
+            if (player.Team is CsTeam.CounterTerrorist or CsTeam.Terrorist && AlivePawn(player) == null)
+            {
+                player.Respawn();
+            }
+        }
     }
 
     private static CCSPlayerPawn? AlivePawn(CCSPlayerController player) =>
