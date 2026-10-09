@@ -21,7 +21,7 @@ namespace ServersModes.Bhop;
 public sealed partial class ServersBhopPlugin : BasePlugin
 {
     public override string ModuleName => "Servers BHOP";
-    public override string ModuleVersion => "1.1.0";
+    public override string ModuleVersion => "1.1.1";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Bunny hop with a timer, records and the map rotation.";
 

@@ -79,7 +79,11 @@ public sealed class BoxStore
         }
     }
 
-    public MapBoxes? For(string map) => _maps.TryGetValue(map, out var saved) ? saved : BuiltIn.GetValueOrDefault(map);
+    // The map name is still empty while the server boots.
+    public MapBoxes? For(string? map) =>
+        string.IsNullOrEmpty(map) ? null
+        : _maps.TryGetValue(map, out var saved) ? saved
+        : BuiltIn.GetValueOrDefault(map);
 
     public void SetStart(string map, Box box)
     {
