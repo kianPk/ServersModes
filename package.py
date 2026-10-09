@@ -5,7 +5,12 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).parent
 # The panel takes a custom plugin's slug from the archive name.
-PLUGINS = {"ServersDuels": "servers-duels", "ServersAwp": "servers-awp", "Servers2x2": "servers-2x2"}
+PLUGINS = {
+    "ServersDuels": "servers-duels",
+    "ServersDm": "servers-dm",
+    "ServersBhop": "servers-bhop",
+    "Servers2x2": "servers-2x2",
+}
 version = sys.argv[1] if len(sys.argv) > 1 else "1.0.0"
 dist = ROOT / "dist"
 dist.mkdir(exist_ok=True)

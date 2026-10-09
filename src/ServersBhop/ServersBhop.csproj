@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>ServersModes.Bhop</RootNamespace>
+    <AssemblyName>ServersBhop</AssemblyName>
+  </PropertyGroup>
+</Project>

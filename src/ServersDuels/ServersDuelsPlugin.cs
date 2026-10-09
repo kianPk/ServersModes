@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.2.9";
+    public override string ModuleVersion => "1.3.0";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
 
@@ -104,6 +104,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _sounds = new ArenaSounds(this, Logger, ArenaOf);
         _banner = new SiteBanner(this);
         NoHealthshot.Register(this);
+        NoBots.Register(this);
         _ = new IdleKick(this, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5));
 
         words.Add(this, "guns", "Choose your rifle and pistol", (player, _) => OpenGuns(player));
@@ -158,16 +159,6 @@ public sealed class ServersDuelsPlugin : BasePlugin
             "bot_quota_mode normal",
             "bot_kick",
         }));
-
-    // The deathmatch game mode's cfg fills the server with bots on every map
-    // load, after the rules above may already have run.
-    private static void KickBots()
-    {
-        if (Utilities.GetPlayers().Any(player => player is { IsValid: true, IsBot: true, IsHLTV: false }))
-        {
-            Server.ExecuteCommand("bot_quota 0;bot_kick");
-        }
-    }
 
     // Every spawn outside a duel is the game's, on whichever spawn it picked,
     // maybe on someone's arena: the player is free, and placed at once.
@@ -330,8 +321,6 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
     private void Tick()
     {
-        KickBots();
-
         if (!_live)
         {
             return;
