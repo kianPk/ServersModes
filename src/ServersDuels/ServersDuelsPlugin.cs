@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.2.7";
+    public override string ModuleVersion => "1.2.8";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
 
@@ -104,6 +104,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _sounds = new ArenaSounds(this, Logger, ArenaOf);
         _banner = new SiteBanner(this);
         NoHealthshot.Register(this);
+        _ = new IdleKick(this, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5));
 
         words.Add(this, "guns", "Choose your rifle and pistol", (player, _) => OpenGuns(player));
         words.Add(this, "rounds", "Choose the round types you play", (player, _) => OpenRounds(player));
@@ -1117,7 +1118,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
             }
 
             Tagged(player, "AFK");
-            Chat.To(player, $"You're AFK and out of the rotation. Type {ChatColors.Green}!afk{ChatColors.Default} to come back.");
+            Chat.To(player, $"You're out of the rotation. Type {ChatColors.Green}!afk{ChatColors.Default} to come back — a minute without input still gets you kicked.");
             return;
         }
 
