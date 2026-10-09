@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.2.3";
+    public override string ModuleVersion => "1.2.4";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
 
@@ -416,32 +416,40 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _duelOf[first] = duel;
         _duelOf[second] = duel;
 
-        Enter(duel.T, CsTeam.Terrorist, Tag(duel, duel.T), () => Arm(duel, duel.T));
-        Enter(duel.Ct, CsTeam.CounterTerrorist, Tag(duel, duel.Ct), () => Arm(duel, duel.Ct));
+        Enter(duel.T, Tag(duel, duel.T), () => Arm(duel, duel.T));
+        Enter(duel.Ct, Tag(duel, duel.Ct), () => Arm(duel, duel.Ct));
     }
 
-    // Onto a side and alive, then whatever comes next once the pawn exists.
-    private void Enter(int slot, CsTeam team, string tag, Action then)
+    // Alive, then whatever comes next once the pawn exists. Teammates are
+    // enemies, so a side only decides the model: a player keeps theirs, as
+    // switching sides and respawning together can leave a pawn without a
+    // model for everyone else. Only a player without one is given a side, and
+    // respawned a moment later.
+    private void Enter(int slot, string tag, Action then)
     {
         if (PlayerAt(slot) is not { } player)
         {
             return;
         }
 
-        if (player.Team != team)
+        Tagged(player, tag);
+
+        if (player.Team is not (CsTeam.Terrorist or CsTeam.CounterTerrorist))
         {
-            if (player.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist)
-            {
-                player.SwitchTeam(team);
-            }
-            else
-            {
-                player.ChangeTeam(team);
-            }
+            player.ChangeTeam(SmallerSide());
+            AddTimer(0.2f, () => Revive(player, then), TimerFlags.STOP_ON_MAPCHANGE);
+            return;
         }
 
-        player.Clan = tag;
-        Utilities.SetStateChanged(player, "CCSPlayerController", "m_szClan");
+        Revive(player, then);
+    }
+
+    private void Revive(CCSPlayerController player, Action then)
+    {
+        if (!player.IsValid)
+        {
+            return;
+        }
 
         if (!IsAlive(player))
         {
@@ -449,6 +457,14 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
 
         AddTimer(0.15f, then, TimerFlags.STOP_ON_MAPCHANGE);
+    }
+
+    private static CsTeam SmallerSide()
+    {
+        var humans = Players.Humans().ToList();
+        var t = humans.Count(player => player.Team == CsTeam.Terrorist);
+        var ct = humans.Count(player => player.Team == CsTeam.CounterTerrorist);
+        return t <= ct ? CsTeam.Terrorist : CsTeam.CounterTerrorist;
     }
 
     // A player who has just picked a side may not respawn on the first try.
@@ -507,6 +523,15 @@ public sealed class ServersDuelsPlugin : BasePlugin
         pawn.Health = 100;
         Utilities.SetStateChanged(pawn, "CBaseEntity", "m_iHealth");
         ClearImmunity(pawn);
+
+        // Spawn immunity fades a pawn out; a duellist is always drawn in full.
+        if (pawn.Render.A != 255 || pawn.RenderMode != RenderMode_t.kRenderNormal)
+        {
+            pawn.RenderMode = RenderMode_t.kRenderNormal;
+            pawn.Render = System.Drawing.Color.FromArgb(255, pawn.Render.R, pawn.Render.G, pawn.Render.B);
+            Utilities.SetStateChanged(pawn, "CBaseModelEntity", "m_nRenderMode");
+            Utilities.SetStateChanged(pawn, "CBaseModelEntity", "m_clrRender");
+        }
     }
 
     // Deathmatch's spawn immunity (the INVULNERABLE box), should a spawn have
@@ -559,8 +584,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
             return;
         }
 
-        var team = player.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist ? player.Team : CsTeam.Terrorist;
-        Enter(slot, team, $"ARENA {arena + 1}", () =>
+        Enter(slot, $"ARENA {arena + 1}", () =>
         {
             if (!_free.TryGetValue(slot, out var still) || still.Arena != arena || PlayerAt(slot) is not { } waiting)
             {
