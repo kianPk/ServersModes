@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.2.1";
+    public override string ModuleVersion => "1.2.2";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
 
@@ -194,7 +194,13 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         _arenas = ArenaFinder.Find();
         _arenasFound = true;
-        Logger.LogInformation("{Map}: found {Count} arenas", Server.MapName, _arenas.Count);
+        Logger.LogInformation(
+            "{Map}: found {Count} arenas from {T} T and {Ct} CT spawns",
+            Server.MapName,
+            _arenas.Count,
+            _arenas.Sum(arena => arena.T.Count),
+            _arenas.Sum(arena => arena.Ct.Count)
+        );
     }
 
     private static CCSPlayerController? PlayerAt(int slot)
@@ -308,27 +314,45 @@ public sealed class ServersDuelsPlugin : BasePlugin
             _free.Remove(gone);
         }
 
+        // Whoever has waited longest picks first, from those nearest their
+        // rating, so an odd player out is never passed over twice.
         var now = Server.CurrentTime;
-        var free = _free.Keys.OrderByDescending(Rating).ToList();
+        var free = _free.Keys.ToList();
         var paired = new HashSet<int>();
+        var pairs = new List<(int First, int Second)>();
 
-        foreach (var first in free)
+        foreach (var first in free.OrderBy(slot => _free[slot].Since).ThenByDescending(Rating))
         {
             if (paired.Contains(first))
             {
                 continue;
             }
 
-            var second = free.Where(slot => slot != first && !paired.Contains(slot)).Cast<int?>().FirstOrDefault(slot => MayMeet(first, slot!.Value, now));
+            var others = free.Where(slot => slot != first && !paired.Contains(slot)).ToList();
+            var fresh = others.Where(slot => !JustMet(first, slot)).ToList();
+            var choices = fresh.Count > 0 ? fresh : others.Where(slot => MayRematch(first, slot, now)).ToList();
 
-            if (second is not int other || FreeArena(first, other) is not int arena)
+            if (choices.Count == 0)
             {
                 continue;
             }
 
+            var rating = Rating(first);
+            var second = choices.MinBy(slot => Math.Abs(Rating(slot) - rating));
             paired.Add(first);
-            paired.Add(other);
-            Start(arena, first, other);
+            paired.Add(second);
+            pairs.Add((first, second));
+        }
+
+        // The best pairs take the lowest arenas.
+        foreach (var (first, second) in pairs.OrderByDescending(pair => Math.Max(Rating(pair.First), Rating(pair.Second))))
+        {
+            if (FreeArena(first, second) is not int arena)
+            {
+                break;
+            }
+
+            Start(arena, first, second);
         }
 
         foreach (var slot in _free.Keys.ToList())
@@ -337,15 +361,12 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
     }
 
-    private bool MayMeet(int first, int second, float now)
-    {
-        var a = _free[first];
-        var b = _free[second];
-        var justMet = a.LastOpponent == second || b.LastOpponent == first;
+    private bool JustMet(int first, int second) =>
+        _free[first].LastOpponent == second || _free[second].LastOpponent == first;
 
-        // Nobody else will come free: they might as well go again.
-        return !justMet || _duels.Count == 0 || now - Math.Max(a.Since, b.Since) >= RematchAfter;
-    }
+    // Two who just met only go again once nobody else is coming free soon.
+    private bool MayRematch(int first, int second, float now) =>
+        _duels.Count == 0 || now - Math.Max(_free[first].Since, _free[second].Since) >= RematchAfter;
 
     // The lowest arena nobody fights or waits in, but for the two about to use it.
     private int? FreeArena(params int[] coming)

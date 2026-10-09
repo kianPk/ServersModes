@@ -14,6 +14,8 @@ public sealed class ArenaSounds
 {
     private const string FireBullets = "CMsgTEFireBullets";
     private const string StartSound = "CMsgSosStartSoundEvent";
+    private const uint NetworkedIndexMask = (1 << 14) - 1;
+    private const uint NoPlayer = 0xFFFFFF;
 
     private readonly ILogger _logger;
     private readonly Func<int, int?> _arenaOf;
@@ -48,14 +50,16 @@ public sealed class ArenaSounds
     {
         try
         {
+            // A networked handle: 14 bits of entity index under 10 of serial,
+            // unlike the 15 a CHandle reads.
             var raw = message.ReadUInt("player");
-            var shooter = new CHandle<CCSPlayerPawn>(raw);
-            var slot = SlotOfPawn(shooter.Index) ?? (shooter.IsValid ? SlotOf(shooter.Value) : null);
+            var index = raw & NetworkedIndexMask;
+            var slot = SlotOfPawn(index);
 
-            if (slot == null)
+            if (slot == null && raw != NoPlayer)
             {
-                var entity = Utilities.GetEntityFromIndex<CBaseEntity>((int)shooter.Index);
-                Report($"{FireBullets} unresolved", null, $"player={raw} index={shooter.Index} entity={entity?.DesignerName ?? "none"}");
+                var entity = Utilities.GetEntityFromIndex<CBaseEntity>((int)index);
+                Report($"{FireBullets} unresolved", null, $"player={raw} index={index} entity={entity?.DesignerName ?? "none"}");
             }
 
             Keep(message, FireBullets, slot);
