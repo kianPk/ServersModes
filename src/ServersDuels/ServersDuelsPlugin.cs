@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.2.4";
+    public override string ModuleVersion => "1.2.5";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
 
@@ -101,6 +101,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         words.Add(this, "rounds", "Choose the round types you play", (player, _) => OpenRounds(player));
         words.Add(this, "queue", "Your arena, rating and status", (player, _) => ShowStatus(player));
         words.Add(this, "afk", "Step out of the rotation, or come back", (player, _) => ToggleAfk(player));
+        words.Add(this, "invisible", "Report an opponent you can't see", (player, _) => ReportInvisible(player));
 
         RegisterListener<Listeners.OnMapStart>(OnMapStart);
         RegisterEventHandler<EventPlayerConnectFull>(OnConnect);
@@ -523,8 +524,22 @@ public sealed class ServersDuelsPlugin : BasePlugin
         pawn.Health = 100;
         Utilities.SetStateChanged(pawn, "CBaseEntity", "m_iHealth");
         ClearImmunity(pawn);
+        MakeVisible(pawn);
+    }
 
-        // Spawn immunity fades a pawn out; a duellist is always drawn in full.
+    private const uint NoDraw = 0x20;
+
+    // Whatever could keep a pawn from being drawn while it still takes hits:
+    // the no-draw flag, a faded render, or a model the clients never loaded.
+    // Setting the model again has every client load it afresh.
+    private static void MakeVisible(CCSPlayerPawn pawn)
+    {
+        if ((pawn.Effects & NoDraw) != 0)
+        {
+            pawn.Effects &= ~NoDraw;
+            Utilities.SetStateChanged(pawn, "CBaseEntity", "m_fEffects");
+        }
+
         if (pawn.Render.A != 255 || pawn.RenderMode != RenderMode_t.kRenderNormal)
         {
             pawn.RenderMode = RenderMode_t.kRenderNormal;
@@ -532,6 +547,55 @@ public sealed class ServersDuelsPlugin : BasePlugin
             Utilities.SetStateChanged(pawn, "CBaseModelEntity", "m_nRenderMode");
             Utilities.SetStateChanged(pawn, "CBaseModelEntity", "m_clrRender");
         }
+
+        var model = ModelOf(pawn);
+        pawn.SetModel(string.IsNullOrEmpty(model) ? DefaultModel(pawn) : model);
+    }
+
+    private static string? ModelOf(CCSPlayerPawn pawn) =>
+        pawn.CBodyComponent?.SceneNode?.GetSkeletonInstance()?.ModelState.ModelName;
+
+    private static string DefaultModel(CCSPlayerPawn pawn) =>
+        pawn.TeamNum == (int)CsTeam.CounterTerrorist
+            ? "characters/models/ctm_sas/ctm_sas.vmdl"
+            : "characters/models/tm_phoenix/tm_phoenix.vmdl";
+
+    private static string Describe(CCSPlayerController? player)
+    {
+        if (player?.PlayerPawn.Value is not { IsValid: true } pawn)
+        {
+            return "no pawn";
+        }
+
+        var origin = pawn.AbsOrigin;
+        return $"{player.PlayerName} team={player.Team} life={pawn.LifeState} hp={pawn.Health} "
+               + $"render={pawn.RenderMode}/{pawn.Render.A} effects=0x{pawn.Effects:X} immune={pawn.GunGameImmunity} "
+               + $"model='{ModelOf(pawn)}' at=({origin?.X:F0},{origin?.Y:F0},{origin?.Z:F0})";
+    }
+
+    // "My opponent is invisible": the state of both goes to the log, and the
+    // opponent is redrawn on the spot.
+    private void ReportInvisible(CCSPlayerController player)
+    {
+        if (!_duelOf.TryGetValue(player.Slot, out var duel) || PlayerAt(duel.Opponent(player.Slot)) is not { } opponent)
+        {
+            Chat.To(player, "You're not in a duel right now.");
+            return;
+        }
+
+        Logger.LogWarning(
+            "Invisible report in arena {Arena}: viewer {Viewer} | opponent {Opponent}",
+            duel.Arena + 1,
+            Describe(player),
+            Describe(opponent)
+        );
+
+        if (opponent.PlayerPawn.Value is { IsValid: true } pawn)
+        {
+            MakeVisible(pawn);
+        }
+
+        Chat.To(player, "Thanks — reported, and your opponent was redrawn.");
     }
 
     // Deathmatch's spawn immunity (the INVULNERABLE box), should a spawn have
