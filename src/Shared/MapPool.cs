@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 namespace ServersModes.Shared;
 
 // The map pool an operator keeps on the site. The api serves it publicly at
-// /dedicated-servers/section-maps/<mode>; API_DOMAIN is set on every
+// /hosted-servers/section-maps/<mode>; API_DOMAIN is set on every
 // dedicated server's container.
 public sealed partial class MapPool
 {
@@ -24,7 +24,7 @@ public sealed partial class MapPool
 
         if (!string.IsNullOrEmpty(api))
         {
-            _url = $"{(api.StartsWith("http") ? api : $"https://{api}")}/dedicated-servers/section-maps/{mode}";
+            _url = $"{(api.StartsWith("http") ? api : $"https://{api}")}/hosted-servers/section-maps/{mode}";
         }
     }
 
