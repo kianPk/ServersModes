@@ -13,7 +13,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.0.5";
+    public override string ModuleVersion => "1.0.6";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "1v1 arenas on a ladder, and the Duels map rotation.";
 
@@ -249,14 +249,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
             _queue.RemoveAt(0);
         }
 
-        // An odd player out waits at the front of the queue -- unless they are
-        // alone, in which case they get an arena to warm up in.
-        if (_ladder.Count % 2 == 1 && _ladder.Count > 1)
-        {
-            _queue.Insert(0, _ladder[^1]);
-            _ladder.RemoveAt(_ladder.Count - 1);
-        }
-
+        // An odd player out gets the last arena to themselves rather than a
+        // seat in spectate, and is paired at round end (see OnRoundEnd).
         for (var arena = 0; arena * 2 < _ladder.Count; arena++)
         {
             var first = _ladder[arena * 2];
@@ -497,13 +491,13 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         var winners = new List<int?>();
         var losers = new List<int?>();
+        int? lone = null;
 
         foreach (var duel in _duels.OrderBy(duel => duel.Arena))
         {
             if (duel.Ct is not int ct)
             {
-                winners.Add(duel.T);
-                losers.Add(null);
+                lone = duel.T;
                 continue;
             }
 
@@ -530,15 +524,27 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         var ladder = next.SelectMany(pair => pair).Where(slot => PlayerAt(slot) != null && !_afk.Contains(slot)).ToList();
 
-        // Whoever waited plays next: the bottom losers sit out in their place,
-        // as many as will not fit next round (the odd one out, or everyone past
-        // the last arena). The queue's front fills the ladder at prestart.
+        // The player who had no opponent takes the bottom loser's place, so
+        // they play next round and the bottom loser has the lone arena.
+        if (lone is int alone && PlayerAt(alone) != null && !_afk.Contains(alone))
+        {
+            ladder.Insert(Math.Max(ladder.Count - 1, 0), alone);
+
+            if (PlayerAt(alone) is { } player)
+            {
+                Chat.To(player, $"You had no opponent this round — arena {ChatColors.Gold}{ladder.IndexOf(alone) / 2 + 1}{ChatColors.Default} next.");
+            }
+        }
+
+        // Past the last arena, whoever waited plays next: as many bottom
+        // losers sit out in their place. The queue's front fills the ladder
+        // at prestart.
         var waiting = _queue.Count(slot => PlayerAt(slot) != null && !_afk.Contains(slot));
 
         if (waiting > 0)
         {
             var total = ladder.Count + waiting;
-            var playing = Math.Min(_arenas.Count * 2, total - total % 2);
+            var playing = Math.Min(_arenas.Count * 2, total);
             var sitOut = Math.Min(total - playing, waiting);
             var leaving = ladder.Where(slot => losers.Contains(slot)).Reverse().Take(sitOut).ToList();
 
