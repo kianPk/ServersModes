@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.1.1";
+    public override string ModuleVersion => "1.2.1";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
 
@@ -108,7 +108,6 @@ public sealed class ServersDuelsPlugin : BasePlugin
         RegisterEventHandler<EventRoundStart>(OnRoundStart);
         RegisterEventHandler<EventPlayerDeath>(OnDeath);
         RegisterEventHandler<EventPlayerSpawn>(OnSpawn);
-        RegisterListener<Listeners.CheckTransmit>(OnCheckTransmit);
         AddCommandListener("jointeam", OnJoinTeam);
         AddTimer(1f, Tick, TimerFlags.REPEAT);
         ApplyRules();
@@ -145,74 +144,6 @@ public sealed class ServersDuelsPlugin : BasePlugin
             "mp_dm_time_between_bonus_min 9999",
             "mp_buytime 0",
         }));
-
-    // Players of other arenas are not sent to a duellist at all, so their
-    // shots, steps, names and models never reach the client. A dead or
-    // spectating player sees everyone: hiding the pawn they watch would crash
-    // their game.
-    private void OnCheckTransmit(CCheckTransmitInfoList infoList)
-    {
-        if (!_live)
-        {
-            return;
-        }
-
-        List<(int Arena, List<uint> Entities)>? placed = null;
-
-        foreach (var (info, viewer) in infoList)
-        {
-            if (viewer is not { IsValid: true } || ArenaOf(viewer.Slot) is not int mine || !IsAlive(viewer))
-            {
-                continue;
-            }
-
-            placed ??= Placed();
-
-            foreach (var (arena, entities) in placed)
-            {
-                if (arena == mine)
-                {
-                    continue;
-                }
-
-                foreach (var entity in entities)
-                {
-                    info.TransmitEntities.Remove(entity);
-                }
-            }
-        }
-    }
-
-    // Every placed player's pawn and the weapons on it, by arena.
-    private List<(int Arena, List<uint> Entities)> Placed()
-    {
-        var placed = new List<(int, List<uint>)>();
-
-        foreach (var player in Players.Humans())
-        {
-            if (ArenaOf(player.Slot) is not int arena || player.PlayerPawn.Value is not { IsValid: true } pawn)
-            {
-                continue;
-            }
-
-            var entities = new List<uint> { pawn.Index };
-
-            if (pawn.WeaponServices is { } weapons)
-            {
-                foreach (var weapon in weapons.MyWeapons)
-                {
-                    if (weapon.IsValid)
-                    {
-                        entities.Add(weapon.Index);
-                    }
-                }
-            }
-
-            placed.Add((arena, entities));
-        }
-
-        return placed;
-    }
 
     // Deathmatch spawns a newcomer by itself, maybe on someone's arena: they
     // go to an empty one at once.
