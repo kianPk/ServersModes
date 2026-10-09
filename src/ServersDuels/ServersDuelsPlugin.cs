@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.2.5";
+    public override string ModuleVersion => "1.2.6";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
 
@@ -42,6 +42,9 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
     // Out of time with both alive, the healthier player takes it.
     private const float DuelSeconds = 60f;
+
+    // Deathmatch respawns within a couple of seconds; past this it is done by hand.
+    private const float RespawnGrace = 5f;
 
     private const double StartRating = 1000;
     private const double RatingStep = 32;
@@ -65,6 +68,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         // The empty arena they wait in, if they have one.
         public int? Arena { get; set; }
+
+        public float? DeadSince { get; set; }
     }
 
     private readonly Random _random = new();
@@ -119,12 +124,13 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
     }
 
-    // The round is only a frame for the arenas: it must neither end when a
-    // side is wiped out nor respawn anyone on its own (the server boots as
-    // Deathmatch, for its HUD), and Deathmatch's random spawns, spawn
-    // immunity and bonus weapons stay off. Every arena's Ts (and CTs) are one
-    // team, and teammates' names show through walls and on the radar, so as
-    // enemies the next arena stays hidden.
+    // The round is only a frame for the arenas and must not end when a side
+    // is wiped out. Deathmatch (the server boots as it, for its HUD) does the
+    // spawning: a pawn the game spawns itself always gets its model, where one
+    // a plugin puts on a team and respawns can come out invisible. Its random
+    // spawns, spawn immunity and bonus weapons stay off. Every arena's Ts (and
+    // CTs) are one team, and teammates' names show through walls and on the
+    // radar, so as enemies the next arena stays hidden.
     private static void ApplyRules() =>
         Server.ExecuteCommand(string.Join(';', new[]
         {
@@ -134,8 +140,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
             "mp_roundtime_defuse 60",
             "mp_roundtime_hostage 60",
             "mp_freezetime 0",
-            "mp_respawn_on_death_t 0",
-            "mp_respawn_on_death_ct 0",
+            "mp_respawn_on_death_t 1",
+            "mp_respawn_on_death_ct 1",
             "mp_join_grace_time 0",
             "mp_randomspawn 0",
             "mp_respawn_immunitytime -1",
@@ -146,8 +152,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
             "mp_buytime 0",
         }));
 
-    // Deathmatch spawns a newcomer by itself, maybe on someone's arena: they
-    // go to an empty one at once.
+    // Every spawn outside a duel is the game's, on whichever spawn it picked,
+    // maybe on someone's arena: the player is free, and placed at once.
     private HookResult OnSpawn(EventPlayerSpawn @event, GameEventInfo info)
     {
         var player = @event.Userid;
@@ -163,21 +169,31 @@ public sealed class ServersDuelsPlugin : BasePlugin
             });
         }
 
-        if (!_live || !Players.IsHuman(player) || _duelOf.ContainsKey(player!.Slot))
+        if (!_live || !Players.IsHuman(player) || _duelOf.TryGetValue(player!.Slot, out var live) && !live.Over)
         {
             return HookResult.Continue;
         }
 
         var slot = player.Slot;
 
-        if (!_free.TryGetValue(slot, out var free) || free.Arena == null)
+        // A loser back before their duel's pause is up ends it early rather
+        // than stand on someone else's arena.
+        Server.NextFrame(() =>
         {
-            Server.NextFrame(() =>
+            if (_duelOf.TryGetValue(slot, out var over) && over.Over)
             {
-                MakeFree(slot);
-                Match();
-            });
-        }
+                Release(over);
+            }
+
+            MakeFree(slot);
+
+            if (_free.TryGetValue(slot, out var free))
+            {
+                free.Arena = null;
+            }
+
+            Match();
+        });
 
         return HookResult.Continue;
     }
@@ -237,10 +253,12 @@ public sealed class ServersDuelsPlugin : BasePlugin
         return _free.TryGetValue(slot, out var free) ? free.Arena : null;
     }
 
-    // Free from the start: no rematch to hold back.
+    // Free from the start: no rematch to hold back. A player without a side
+    // waits for the game to give them one.
     private void MakeFree(int slot)
     {
-        if (!_afk.Contains(slot) && !_duelOf.ContainsKey(slot) && !_free.ContainsKey(slot) && PlayerAt(slot) != null)
+        if (!_afk.Contains(slot) && !_duelOf.ContainsKey(slot) && !_free.ContainsKey(slot)
+            && PlayerAt(slot) is { Team: CsTeam.Terrorist or CsTeam.CounterTerrorist })
         {
             _free[slot] = new Free { Since = Server.CurrentTime - RematchAfter };
         }
@@ -329,7 +347,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         // Whoever has waited longest picks first, from those nearest their
         // rating, so an odd player out is never passed over twice.
         var now = Server.CurrentTime;
-        var free = _free.Keys.ToList();
+        var free = _free.Keys.Where(slot => PlayerAt(slot) is { } player && IsAlive(player)).ToList();
         var paired = new HashSet<int>();
         var pairs = new List<(int First, int Second)>();
 
@@ -421,11 +439,9 @@ public sealed class ServersDuelsPlugin : BasePlugin
         Enter(duel.Ct, Tag(duel, duel.Ct), () => Arm(duel, duel.Ct));
     }
 
-    // Alive, then whatever comes next once the pawn exists. Teammates are
-    // enemies, so a side only decides the model: a player keeps theirs, as
-    // switching sides and respawning together can leave a pawn without a
-    // model for everyone else. Only a player without one is given a side, and
-    // respawned a moment later.
+    // Only living players are paired or placed, so this is just the tag and
+    // a moment for the pawn to settle. Teammates are enemies, so a player
+    // keeps their side: switching it under a living pawn is never needed.
     private void Enter(int slot, string tag, Action then)
     {
         if (PlayerAt(slot) is not { } player)
@@ -434,29 +450,6 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
 
         Tagged(player, tag);
-
-        if (player.Team is not (CsTeam.Terrorist or CsTeam.CounterTerrorist))
-        {
-            player.ChangeTeam(SmallerSide());
-            AddTimer(0.2f, () => Revive(player, then), TimerFlags.STOP_ON_MAPCHANGE);
-            return;
-        }
-
-        Revive(player, then);
-    }
-
-    private void Revive(CCSPlayerController player, Action then)
-    {
-        if (!player.IsValid)
-        {
-            return;
-        }
-
-        if (!IsAlive(player))
-        {
-            player.Respawn();
-        }
-
         AddTimer(0.15f, then, TimerFlags.STOP_ON_MAPCHANGE);
     }
 
@@ -468,7 +461,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
         return t <= ct ? CsTeam.Terrorist : CsTeam.CounterTerrorist;
     }
 
-    // A player who has just picked a side may not respawn on the first try.
+    // Both were alive when paired; one who died since (a fall) is waited for
+    // through the game's respawn.
     private void Arm(Duel duel, int slot, int attempt = 0)
     {
         if (duel.Over || !_duelOf.TryGetValue(slot, out var current) || current != duel || PlayerAt(slot) is not { } player)
@@ -480,10 +474,9 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         if (pawn is not { LifeState: (byte)LifeState_t.LIFE_ALIVE })
         {
-            if (attempt < 5)
+            if (attempt < 10)
             {
-                player.Respawn();
-                AddTimer(0.2f, () => Arm(duel, slot, attempt + 1), TimerFlags.STOP_ON_MAPCHANGE);
+                AddTimer(0.5f, () => Arm(duel, slot, attempt + 1), TimerFlags.STOP_ON_MAPCHANGE);
             }
 
             return;
@@ -573,29 +566,28 @@ public sealed class ServersDuelsPlugin : BasePlugin
                + $"model='{ModelOf(pawn)}' at=({origin?.X:F0},{origin?.Y:F0},{origin?.Z:F0})";
     }
 
-    // "My opponent is invisible": the state of both goes to the log, and the
-    // opponent is redrawn on the spot.
+    // "Someone is invisible", the reporter or their opponent: the state of
+    // both goes to the log, and both are redrawn on the spot.
     private void ReportInvisible(CCSPlayerController player)
     {
-        if (!_duelOf.TryGetValue(player.Slot, out var duel) || PlayerAt(duel.Opponent(player.Slot)) is not { } opponent)
-        {
-            Chat.To(player, "You're not in a duel right now.");
-            return;
-        }
+        var opponent = _duelOf.TryGetValue(player.Slot, out var duel) ? PlayerAt(duel.Opponent(player.Slot)) : null;
 
         Logger.LogWarning(
             "Invisible report in arena {Arena}: viewer {Viewer} | opponent {Opponent}",
-            duel.Arena + 1,
+            duel is null ? "none" : duel.Arena + 1,
             Describe(player),
-            Describe(opponent)
+            opponent is null ? "none" : Describe(opponent)
         );
 
-        if (opponent.PlayerPawn.Value is { IsValid: true } pawn)
+        foreach (var redrawn in new[] { player, opponent })
         {
-            MakeVisible(pawn);
+            if (redrawn?.PlayerPawn.Value is { IsValid: true, LifeState: (byte)LifeState_t.LIFE_ALIVE } pawn)
+            {
+                MakeVisible(pawn);
+            }
         }
 
-        Chat.To(player, "Thanks — reported, and your opponent was redrawn.");
+        Chat.To(player, "Thanks — reported, and redrawn.");
     }
 
     // Deathmatch's spawn immunity (the INVULNERABLE box), should a spawn have
@@ -611,14 +603,32 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
     }
 
-    // Alone in an empty arena until someone comes free; in spectate only when
-    // every arena is taken.
+    // Alone in an empty arena until someone comes free; where the game
+    // spawned them when every arena is taken. The dead wait for the game's
+    // respawn, which places them, and are only respawned by hand should it
+    // never come.
     private void Wait(int slot)
     {
         if (!_free.TryGetValue(slot, out var free) || PlayerAt(slot) is not { } player)
         {
             return;
         }
+
+        if (!IsAlive(player))
+        {
+            var now = Server.CurrentTime;
+            free.DeadSince ??= now;
+
+            if (now - free.DeadSince >= RespawnGrace && player.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist)
+            {
+                free.DeadSince = now;
+                player.Respawn();
+            }
+
+            return;
+        }
+
+        free.DeadSince = null;
 
         var inDuelArena = free.Arena is int held && _duels.Any(duel => duel.Arena == held);
 
@@ -639,11 +649,6 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         if (free.Arena is not int arena)
         {
-            if (player.Team != CsTeam.Spectator)
-            {
-                player.ChangeTeam(CsTeam.Spectator);
-            }
-
             Tagged(player, "QUEUE");
             return;
         }
@@ -817,7 +822,6 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
 
         Forget(player!.Slot);
-        MakeFree(player.Slot);
 
         AddTimer(5f, () =>
         {
@@ -881,9 +885,9 @@ public sealed class ServersDuelsPlugin : BasePlugin
             return HookResult.Handled;
         }
 
+        // A newcomer's first side is the game's to give, with its spawn.
         if (player.Team == CsTeam.None)
         {
-            MakeFree(slot);
             return HookResult.Continue;
         }
 
@@ -1115,6 +1119,12 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
 
         _afk.Remove(slot);
+
+        if (player.Team is not (CsTeam.Terrorist or CsTeam.CounterTerrorist))
+        {
+            player.ChangeTeam(SmallerSide());
+        }
+
         MakeFree(slot);
         Chat.To(player, "Welcome back — your next opponent is on the way.");
     }
