@@ -50,8 +50,14 @@ public sealed class ArenaSounds
         {
             var raw = message.ReadUInt("player");
             var shooter = new CHandle<CCSPlayerPawn>(raw);
-            var slot = shooter.IsValid ? SlotOf(shooter.Value) : null;
-            Report($"{FireBullets} seen", null, $"player={raw} index={shooter.Index} slot={slot?.ToString() ?? "none"} arena={(slot is int s ? _arenaOf(s)?.ToString() : null) ?? "none"} listeners={message.Recipients.Count}");
+            var slot = SlotOfPawn(shooter.Index) ?? (shooter.IsValid ? SlotOf(shooter.Value) : null);
+
+            if (slot == null)
+            {
+                var entity = Utilities.GetEntityFromIndex<CBaseEntity>((int)shooter.Index);
+                Report($"{FireBullets} unresolved", null, $"player={raw} index={shooter.Index} entity={entity?.DesignerName ?? "none"}");
+            }
+
             Keep(message, FireBullets, slot);
         }
         catch (Exception error)
@@ -140,7 +146,21 @@ public sealed class ArenaSounds
             }
         }
 
-        var controller = new CCSPlayerPawn(entity.Handle).Controller.Value;
-        return controller is { IsValid: true } ? (int)controller.Index - 1 : null;
+        return SlotOfPawn(entity.Index);
+    }
+
+    // The pawn's own back-reference to its controller is not always set, so
+    // the controllers are asked which of them owns it.
+    private static int? SlotOfPawn(uint pawnIndex)
+    {
+        foreach (var player in Utilities.GetPlayers())
+        {
+            if (player is { IsValid: true } && player.PlayerPawn.IsValid && player.PlayerPawn.Index == pawnIndex)
+            {
+                return player.Slot;
+            }
+        }
+
+        return null;
     }
 }
