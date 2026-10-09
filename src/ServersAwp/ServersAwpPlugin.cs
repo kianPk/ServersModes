@@ -9,7 +9,7 @@ namespace ServersModes.Awp;
 public sealed class ServersAwpPlugin : BasePlugin
 {
     public override string ModuleName => "Servers AWP";
-    public override string ModuleVersion => "1.0.0";
+    public override string ModuleVersion => "1.0.1";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "AWP-only rules and the AWP map rotation.";
 

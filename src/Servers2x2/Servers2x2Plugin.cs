@@ -8,7 +8,7 @@ namespace ServersModes.Wingman;
 public sealed class Servers2x2Plugin : BasePlugin
 {
     public override string ModuleName => "Servers 2x2";
-    public override string ModuleVersion => "1.0.0";
+    public override string ModuleVersion => "1.0.1";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "The 2x2 (Wingman) map rotation and its vote.";
 

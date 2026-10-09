@@ -74,9 +74,25 @@ public sealed class MapVote
 
     private void OnMapStart(string mapName)
     {
+        var onPool = _pending != null || Find(mapName) != null;
+
         _previous = _current;
         _current = _pending ?? Find(mapName) ?? _current;
         _pending = null;
+
+        // CS2 logs into Steam only once a map has loaded, and cannot download
+        // a workshop map before it has, so a workshop mode boots on a stock map
+        // and moves to its pool from here. A workshop map whose internal name
+        // differs from ours is already on the pool, hence the stock-map test.
+        if (!onPool && IsStockMap(mapName))
+        {
+            _current = 0;
+            _plugin.AddTimer(8f, () =>
+            {
+                _pending = 0;
+                Server.ExecuteCommand(Command(_maps[0]));
+            }, TimerFlags.STOP_ON_MAPCHANGE);
+        }
         _next = null;
         _voting = false;
         _changeWhenDecided = false;
@@ -102,6 +118,14 @@ public sealed class MapVote
 
         return null;
     }
+
+    private static bool IsStockMap(string mapName) =>
+        mapName.StartsWith("de_", StringComparison.OrdinalIgnoreCase)
+        || mapName.StartsWith("cs_", StringComparison.OrdinalIgnoreCase)
+        || mapName.StartsWith("ar_", StringComparison.OrdinalIgnoreCase);
+
+    private static string Command(ServerMap map) =>
+        map.IsWorkshop ? $"host_workshop_map {map.Id}" : $"changelevel {map.Id}";
 
     private static string Normalize(string value) =>
         new(value.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
@@ -440,7 +464,7 @@ public sealed class MapVote
         _plugin.AddTimer(seconds, () =>
         {
             _pending = _maps.ToList().IndexOf(map);
-            Server.ExecuteCommand(map.IsWorkshop ? $"host_workshop_map {map.Id}" : $"changelevel {map.Id}");
+            Server.ExecuteCommand(Command(map));
         }, TimerFlags.STOP_ON_MAPCHANGE);
     }
 }
