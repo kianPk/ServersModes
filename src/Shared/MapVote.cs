@@ -1,5 +1,6 @@
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
+using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Cvars;
 using CounterStrikeSharp.API.Modules.Menu;
 using CounterStrikeSharp.API.Modules.Timers;
@@ -27,6 +28,10 @@ public enum MapEnd
 // !timeleft and !nextmap. Maps change through changelevel/host_workshop_map,
 // so the cfg leaves the end of the match to this (mp_match_end_restart 1,
 // mp_match_end_changelevel 0, mp_endmatch_votenextmap 0).
+//
+// The pool starts as the plugin's own list and is replaced by the one an
+// operator keeps on the site, fetched again on every map start. The site's
+// "change map" sends css_servers_map <id> over rcon.
 public sealed class MapVote
 {
     private const float VoteSeconds = 20f;
@@ -34,14 +39,15 @@ public sealed class MapVote
     private const double RtvShare = 0.6;
 
     private readonly BasePlugin _plugin;
-    private readonly IReadOnlyList<ServerMap> _maps;
+    private readonly MapPool _pool;
+    private List<ServerMap> _maps;
     private readonly int _mapsToShow;
     private readonly MapEnd _end;
     private readonly Random _random = new();
 
-    private int _current;
-    private int? _previous;
-    private int? _pending;
+    private ServerMap _current;
+    private ServerMap? _previous;
+    private ServerMap? _pending;
     private ServerMap? _next;
     private bool _voting;
     private bool _changeWhenDecided;
@@ -50,11 +56,14 @@ public sealed class MapVote
     private readonly Dictionary<ulong, ServerMap> _nominations = new();
     private readonly Dictionary<ulong, ServerMap> _votes = new();
     private Timer? _voteTimer;
+    private Timer? _changeTimer;
 
-    public MapVote(BasePlugin plugin, ChatWords words, IReadOnlyList<ServerMap> maps, int mapsToShow, MapEnd end)
+    public MapVote(BasePlugin plugin, ChatWords words, string mode, IReadOnlyList<ServerMap> maps, int mapsToShow, MapEnd end)
     {
         _plugin = plugin;
-        _maps = maps;
+        _pool = new MapPool(plugin.Logger, mode);
+        _maps = maps.ToList();
+        _current = _maps[0];
         _mapsToShow = mapsToShow;
         _end = end;
 
@@ -62,37 +71,40 @@ public sealed class MapVote
         words.Add(plugin, "nominate", "Nominate a map for the vote", Nominate);
         words.Add(plugin, "timeleft", "Time left on this map", (player, _) => TimeLeft(player));
         words.Add(plugin, "nextmap", "Show the next map", (player, _) => Chat.To(player, NextMapText()));
+        plugin.AddCommand("css_servers_map", "Change to a map now: <workshop id or map name>", OnChangeMapCommand);
 
         plugin.RegisterListener<Listeners.OnMapStart>(OnMapStart);
         plugin.RegisterEventHandler<EventPlayerDisconnect>(OnDisconnect);
         plugin.RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
         plugin.RegisterEventHandler<EventCsWinPanelMatch>(OnMatchEnd);
         plugin.AddTimer(5f, Tick, TimerFlags.REPEAT);
+
+        _pool.Refresh(SetMaps);
     }
 
-    private ServerMap Current => _maps[_current];
+    private void SetMaps(List<ServerMap> maps)
+    {
+        _maps = maps;
+        _current = Find(_current.Id) ?? _current;
+    }
 
     private void OnMapStart(string mapName)
     {
-        var onPool = _pending != null || Find(mapName) != null;
+        var arrived = _pending ?? Find(mapName);
 
         _previous = _current;
-        _current = _pending ?? Find(mapName) ?? _current;
+        _current = arrived ?? new ServerMap(mapName, mapName);
         _pending = null;
 
         // CS2 logs into Steam only once a map has loaded, and cannot download
         // a workshop map before it has, so a workshop mode boots on a stock map
         // and moves to its pool from here. A workshop map whose internal name
         // differs from ours is already on the pool, hence the stock-map test.
-        if (!onPool && IsStockMap(mapName))
+        if (arrived == null && IsStockMap(mapName))
         {
-            _current = 0;
-            _plugin.AddTimer(8f, () =>
-            {
-                _pending = 0;
-                Server.ExecuteCommand(Command(_maps[0]));
-            }, TimerFlags.STOP_ON_MAPCHANGE);
+            _plugin.AddTimer(8f, () => Change(_maps[0]), TimerFlags.STOP_ON_MAPCHANGE);
         }
+
         _next = null;
         _voting = false;
         _changeWhenDecided = false;
@@ -102,21 +114,38 @@ public sealed class MapVote
         _votes.Clear();
         _voteTimer?.Kill();
         _voteTimer = null;
+        _changeTimer = null;
+
+        _pool.Refresh(SetMaps);
     }
 
-    private int? Find(string mapName)
+    private void OnChangeMapCommand(CCSPlayerController? player, CommandInfo command)
     {
-        var normalized = Normalize(mapName);
+        var id = command.GetArg(1).Trim();
 
-        for (var index = 0; index < _maps.Count; index++)
+        // rcon only: a player typing it in their console has no say here.
+        if (player != null || !MapPool.MapId().IsMatch(id))
         {
-            if (Normalize(_maps[index].Id) == normalized || Normalize(_maps[index].Name) == normalized)
-            {
-                return index;
-            }
+            return;
         }
 
-        return null;
+        var map = Find(id) ?? new ServerMap(id, id);
+
+        _voteTimer?.Kill();
+        _voteTimer = null;
+        _voting = false;
+        _changeTimer?.Kill();
+        _changing = false;
+        _next = map;
+
+        Chat.All($"An admin is changing the map to {ChatColors.Gold}{map.Name}{ChatColors.Default}.");
+        ChangeAfter(3f);
+    }
+
+    private ServerMap? Find(string mapName)
+    {
+        var normalized = Normalize(mapName);
+        return _maps.FirstOrDefault(map => Normalize(map.Id) == normalized || Normalize(map.Name) == normalized);
     }
 
     private static bool IsStockMap(string mapName) =>
@@ -124,8 +153,11 @@ public sealed class MapVote
         || mapName.StartsWith("cs_", StringComparison.OrdinalIgnoreCase)
         || mapName.StartsWith("ar_", StringComparison.OrdinalIgnoreCase);
 
-    private static string Command(ServerMap map) =>
-        map.IsWorkshop ? $"host_workshop_map {map.Id}" : $"changelevel {map.Id}";
+    private void Change(ServerMap map)
+    {
+        _pending = map;
+        Server.ExecuteCommand(map.IsWorkshop ? $"host_workshop_map {map.Id}" : $"changelevel {map.Id}");
+    }
 
     private static string Normalize(string value) =>
         new(value.ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
@@ -278,7 +310,7 @@ public sealed class MapVote
             return;
         }
 
-        var choices = _maps.Where(map => map != Current).ToList();
+        var choices = _maps.Where(map => map != _current).ToList();
 
         if (args.Length > 0)
         {
@@ -325,7 +357,7 @@ public sealed class MapVote
                 player,
                 left == null
                     ? "This map has no time limit."
-                    : $"Time left on {ChatColors.Green}{Current.Name}{ChatColors.Default}: {ChatColors.Gold}{Format(Math.Max(0, left.Value))}"
+                    : $"Time left on {ChatColors.Green}{_current.Name}{ChatColors.Default}: {ChatColors.Gold}{Format(Math.Max(0, left.Value))}"
             );
             return;
         }
@@ -350,14 +382,14 @@ public sealed class MapVote
 
         foreach (var map in _nominations.Values.Distinct())
         {
-            if (map != Current && options.Count < _mapsToShow)
+            if (map != _current && options.Count < _mapsToShow)
             {
                 options.Add(map);
             }
         }
 
-        var previous = _previous is int index && index != _current ? _maps[index] : null;
-        var fresh = _maps.Where(map => map != Current && map != previous && !options.Contains(map)).OrderBy(_ => _random.Next());
+        var previous = _previous != null && _previous != _current && _maps.Contains(_previous) ? _previous : null;
+        var fresh = _maps.Where(map => map != _current && map != previous && !options.Contains(map)).OrderBy(_ => _random.Next());
         var cooled = previous != null && !options.Contains(previous) ? new[] { previous } : Array.Empty<ServerMap>();
 
         foreach (var map in fresh.Concat(cooled))
@@ -431,7 +463,8 @@ public sealed class MapVote
         }, TimerFlags.STOP_ON_MAPCHANGE);
     }
 
-    private ServerMap Rotation() => _maps[(_current + 1) % _maps.Count];
+    // A map that has left the pool, or was never in it, carries on from the top.
+    private ServerMap Rotation() => _maps[(_maps.IndexOf(_current) + 1) % _maps.Count];
 
     private void Decide(ServerMap map, string? reason = null)
     {
@@ -461,10 +494,10 @@ public sealed class MapVote
         var map = _next;
         Chat.All($"Changing the map to {ChatColors.Gold}{map.Name}{ChatColors.Default}…");
 
-        _plugin.AddTimer(seconds, () =>
+        _changeTimer = _plugin.AddTimer(seconds, () =>
         {
-            _pending = _maps.ToList().IndexOf(map);
-            Server.ExecuteCommand(Command(map));
+            _changeTimer = null;
+            Change(map);
         }, TimerFlags.STOP_ON_MAPCHANGE);
     }
 }

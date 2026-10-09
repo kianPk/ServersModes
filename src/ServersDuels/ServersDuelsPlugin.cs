@@ -13,16 +13,16 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.0.1";
+    public override string ModuleVersion => "1.0.2";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "1v1 arenas on a ladder, and the Duels map rotation.";
 
+    // Until the pool kept on the site arrives.
     private static readonly ServerMap[] Maps =
     [
-        new("Mirage Duels", "3145424712"),
+        new("am_map", "3626024193"),
+        new("Redline NGNW", "3679824083"),
         new("Redline", "3139172262"),
-        new("Anubis Duels", "3242420753"),
-        new("Forgotten Yard", "3356301765"),
     ];
 
     private sealed class Duel
@@ -40,6 +40,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
     private PreferenceStore _preferences = null!;
     private List<Arena> _arenas = new();
     private bool _arenasFound;
+    private readonly ArenaSigns _signs = new();
 
     // Ladder order: the two players of arena n are at 2n and 2n+1.
     private readonly List<int> _ladder = new();
@@ -55,7 +56,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _preferences = new PreferenceStore(Path.Combine(ModuleDirectory, "preferences.json"));
 
         var words = new ChatWords(this);
-        _ = new MapVote(this, words, Maps, 4, MapEnd.Timed);
+        _ = new MapVote(this, words, "duels", Maps, 4, MapEnd.Timed);
 
         words.Add(this, "guns", "Choose your rifle and pistol", (player, _) => OpenGuns(player));
         words.Add(this, "rounds", "Choose the round types you play", (player, _) => OpenRounds(player));
@@ -66,6 +67,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         RegisterEventHandler<EventPlayerConnectFull>(OnConnect);
         RegisterEventHandler<EventPlayerDisconnect>(OnDisconnect);
         RegisterEventHandler<EventRoundPrestart>(OnRoundPrestart);
+        RegisterEventHandler<EventRoundStart>(OnRoundStart);
         RegisterEventHandler<EventPlayerSpawn>(OnSpawn);
         RegisterEventHandler<EventPlayerDeath>(OnDeath);
         RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
@@ -84,6 +86,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
     {
         _arenas = new();
         _arenasFound = false;
+        _signs.Clear();
         _duels = new();
         _duelOf.Clear();
         _roundLive = false;
@@ -296,6 +299,19 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
 
         _roundLive = true;
+        return HookResult.Continue;
+    }
+
+    // The round's cleanup may take the signs with it, so they go up again on
+    // every round start.
+    private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
+    {
+        Server.NextFrame(() =>
+        {
+            EnsureArenas();
+            _signs.Place(_arenas);
+        });
+
         return HookResult.Continue;
     }
 
