@@ -13,7 +13,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.0.6";
+    public override string ModuleVersion => "1.0.7";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "1v1 arenas on a ladder, and the Duels map rotation.";
 
@@ -51,6 +51,10 @@ public sealed class ServersDuelsPlugin : BasePlugin
     private List<Duel> _duels = new();
     private bool _roundLive;
 
+    // Wins between two players on this map, keyed by their SteamIDs in order:
+    // each pair keeps its own score, as the teams' score means nothing here.
+    private readonly Dictionary<(ulong, ulong), int[]> _scores = new();
+
     public override void Load(bool hotReload)
     {
         Chat.Tag = "Duels";
@@ -58,6 +62,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "duels", Maps, 4, MapEnd.Timed);
+        _ = new ArenaSounds(this, slot => _duelOf.TryGetValue(slot, out var duel) ? duel.Arena : null);
 
         words.Add(this, "guns", "Choose your rifle and pistol", (player, _) => OpenGuns(player));
         words.Add(this, "rounds", "Choose the round types you play", (player, _) => OpenRounds(player));
@@ -92,6 +97,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _duels = new();
         _duelOf.Clear();
         _roundLive = false;
+        _scores.Clear();
 
         // A new map is a new ladder, but the order players had carries over.
         _queue.InsertRange(0, _ladder);
@@ -220,6 +226,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _duels = new();
         _duelOf.Clear();
         _roundLive = false;
+        ClearTeamScores();
 
         if (Players.IsWarmup())
         {
@@ -276,11 +283,11 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         foreach (var duel in _duels)
         {
-            Place(duel.T, CsTeam.Terrorist, $"ARENA {duel.Arena + 1}");
+            Place(duel.T, CsTeam.Terrorist, Tag(duel, duel.T));
 
             if (duel.Ct is int ct)
             {
-                Place(ct, CsTeam.CounterTerrorist, $"ARENA {duel.Arena + 1}");
+                Place(ct, CsTeam.CounterTerrorist, Tag(duel, ct));
             }
         }
 
@@ -329,6 +336,66 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
 
         return shared[_random.Next(shared.Count)];
+    }
+
+    private string Tag(Duel duel, int slot)
+    {
+        if (duel.Opponent(slot) is not int opponent)
+        {
+            return $"ARENA {duel.Arena + 1}";
+        }
+
+        var (mine, theirs) = Score(slot, opponent);
+        return $"ARENA {duel.Arena + 1} | {mine}-{theirs}";
+    }
+
+    private static (ulong, ulong)? PairOf(int slot, int opponent)
+    {
+        if (PlayerAt(slot) is not { } me || PlayerAt(opponent) is not { } them)
+        {
+            return null;
+        }
+
+        return me.SteamID < them.SteamID ? (me.SteamID, them.SteamID) : (them.SteamID, me.SteamID);
+    }
+
+    private (int Mine, int Theirs) Score(int slot, int opponent)
+    {
+        if (PairOf(slot, opponent) is not { } pair || !_scores.TryGetValue(pair, out var wins))
+        {
+            return (0, 0);
+        }
+
+        return PlayerAt(slot)!.SteamID == pair.Item1 ? (wins[0], wins[1]) : (wins[1], wins[0]);
+    }
+
+    private void AddWin(int winner, int loser)
+    {
+        if (PairOf(winner, loser) is not { } pair)
+        {
+            return;
+        }
+
+        if (!_scores.TryGetValue(pair, out var wins))
+        {
+            _scores[pair] = wins = new int[2];
+        }
+
+        wins[PlayerAt(winner)!.SteamID == pair.Item1 ? 0 : 1]++;
+    }
+
+    // Every arena's winner would count for their side; nobody's score is the
+    // sum of everyone's duels, so the teams stay at zero.
+    private static void ClearTeamScores()
+    {
+        foreach (var team in Utilities.FindAllEntitiesByDesignerName<CTeam>("cs_team_manager"))
+        {
+            if (team.Score != 0)
+            {
+                team.Score = 0;
+                Utilities.SetStateChanged(team, "CTeam", "m_iScore");
+            }
+        }
     }
 
     private PlayerPreferences? Preferences(int slot) =>
@@ -428,16 +495,18 @@ public sealed class ServersDuelsPlugin : BasePlugin
         player.GiveNamedItem(preferences.Pistol);
         player.GiveNamedItem(duel.Round == RoundType.Pistol ? "item_kevlar" : "item_assaultsuit");
 
-        var opponent = duel.Opponent(player.Slot) is int other ? PlayerAt(other)?.PlayerName : null;
+        var other = duel.Opponent(player.Slot);
+        var opponent = other is int slot ? PlayerAt(slot)?.PlayerName : null;
+        var (mine, theirs) = other is int them ? Score(player.Slot, them) : (0, 0);
         var round = Weapons.RoundName(duel.Round);
 
         Chat.To(
             player,
             opponent == null
                 ? $"{ChatColors.Gold}Arena {duel.Arena + 1}{ChatColors.Default} · {round} · waiting for an opponent"
-                : $"{ChatColors.Gold}Arena {duel.Arena + 1}{ChatColors.Default} · {round} · vs {ChatColors.LightRed}{opponent}"
+                : $"{ChatColors.Gold}Arena {duel.Arena + 1}{ChatColors.Default} · {round} · vs {ChatColors.LightRed}{opponent}{ChatColors.Default} · {ChatColors.Green}{mine}{ChatColors.Default}-{ChatColors.LightRed}{theirs}"
         );
-        player.PrintToCenter(opponent == null ? $"Arena {duel.Arena + 1} | {round}" : $"Arena {duel.Arena + 1} | {round} | vs {opponent}");
+        player.PrintToCenter(opponent == null ? $"Arena {duel.Arena + 1} | {round}" : $"Arena {duel.Arena + 1} | {round} | vs {opponent} | {mine}-{theirs}");
     }
 
     private HookResult OnDeath(EventPlayerDeath @event, GameEventInfo info)
@@ -483,6 +552,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
     private HookResult OnRoundEnd(EventRoundEnd @event, GameEventInfo info)
     {
         _roundLive = false;
+        Server.NextFrame(ClearTeamScores);
 
         if (Players.IsWarmup() || _duels.Count == 0)
         {
@@ -502,8 +572,10 @@ public sealed class ServersDuelsPlugin : BasePlugin
             }
 
             var winner = duel.Winner ?? TimeoutWinner(duel.T, ct);
+            var loser = winner == duel.T ? ct : duel.T;
             winners.Add(winner);
-            losers.Add(winner == duel.T ? ct : duel.T);
+            losers.Add(loser);
+            AddWin(winner, loser);
         }
 
         var count = winners.Count;
@@ -565,8 +637,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         for (var arena = 0; arena < count; arena++)
         {
-            Tell(winners[arena], true);
-            Tell(losers[arena], false);
+            Tell(winners[arena], losers[arena], true);
+            Tell(losers[arena], winners[arena], false);
         }
 
         return HookResult.Continue;
@@ -601,7 +673,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         return pawn is { LifeState: (byte)LifeState_t.LIFE_ALIVE } ? pawn.Health : 0;
     }
 
-    private void Tell(int? slot, bool won)
+    private void Tell(int? slot, int? opponent, bool won)
     {
         if (slot is not int value || PlayerAt(value) is not { } player)
         {
@@ -612,8 +684,15 @@ public sealed class ServersDuelsPlugin : BasePlugin
         var where = index >= 0
             ? $"arena {ChatColors.Gold}{index / 2 + 1}{ChatColors.Default} next"
             : "you're in the queue for the next round";
+        var score = "";
 
-        Chat.To(player, won ? $"{ChatColors.Green}You won{ChatColors.Default} — {where}." : $"{ChatColors.LightRed}You lost{ChatColors.Default} — {where}.");
+        if (opponent is int other && PlayerAt(other) is { } them)
+        {
+            var (mine, theirs) = Score(value, other);
+            score = $" vs {them.PlayerName} ({mine}-{theirs})";
+        }
+
+        Chat.To(player, won ? $"{ChatColors.Green}You won{ChatColors.Default}{score} — {where}." : $"{ChatColors.LightRed}You lost{ChatColors.Default}{score} — {where}.");
     }
 
     private void OpenGuns(CCSPlayerController player)
