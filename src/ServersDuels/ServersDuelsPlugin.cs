@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.2.6";
+    public override string ModuleVersion => "1.2.7";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
 
@@ -79,6 +79,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
     private readonly ArenaSigns _signs = new();
     private bool _signsLogged;
     private ArenaSounds _sounds = null!;
+    private SiteBanner _banner = null!;
 
     private readonly List<Duel> _duels = new();
     private readonly Dictionary<int, Duel> _duelOf = new();
@@ -101,6 +102,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "duels", Maps, 4, MapEnd.Timed);
         _sounds = new ArenaSounds(this, Logger, ArenaOf);
+        _banner = new SiteBanner(this);
+        NoHealthshot.Register(this);
 
         words.Add(this, "guns", "Choose your rifle and pistol", (player, _) => OpenGuns(player));
         words.Add(this, "rounds", "Choose the round types you play", (player, _) => OpenRounds(player));
@@ -978,7 +981,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         foreach (var (slot, free) in _free)
         {
-            if (PlayerAt(slot) is { } player)
+            if (!_banner.Showing(slot) && PlayerAt(slot) is { } player)
             {
                 var where = free.Arena is int arena ? $"<font color='#f5a524'>ARENA {arena + 1}</font> · " : "";
                 player.PrintToCenterHtml($"{where}Finding your next opponent…<br>Rating {(int)Math.Round(Rating(slot))}", 2);
@@ -988,7 +991,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
     private void ShowScore(Duel duel, int slot)
     {
-        if (PlayerAt(slot) is not { } player)
+        if (_banner.Showing(slot) || PlayerAt(slot) is not { } player)
         {
             return;
         }

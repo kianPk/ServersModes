@@ -9,7 +9,7 @@ namespace ServersModes.Awp;
 public sealed class ServersAwpPlugin : BasePlugin
 {
     public override string ModuleName => "Servers AWP";
-    public override string ModuleVersion => "1.0.5";
+    public override string ModuleVersion => "1.0.6";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "AWP-only rules and the AWP map rotation.";
 
@@ -27,6 +27,8 @@ public sealed class ServersAwpPlugin : BasePlugin
 
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "awp", Maps, 4, MapEnd.Timed);
+        _ = new SiteBanner(this);
+        NoHealthshot.Register(this);
 
         RegisterEventHandler<EventPlayerSpawn>(OnSpawn);
         RegisterEventHandler<EventPlayerConnectFull>(OnConnect);

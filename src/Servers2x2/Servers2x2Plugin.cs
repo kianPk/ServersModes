@@ -8,7 +8,7 @@ namespace ServersModes.Wingman;
 public sealed class Servers2x2Plugin : BasePlugin
 {
     public override string ModuleName => "Servers 2x2";
-    public override string ModuleVersion => "1.0.5";
+    public override string ModuleVersion => "1.0.6";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "The 2x2 (Wingman) map rotation and its vote.";
 
@@ -27,6 +27,8 @@ public sealed class Servers2x2Plugin : BasePlugin
 
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "2x2", Maps, 5, MapEnd.Match);
+        _ = new SiteBanner(this);
+        NoHealthshot.Register(this);
 
         RegisterEventHandler<EventPlayerConnectFull>(OnConnect);
     }
