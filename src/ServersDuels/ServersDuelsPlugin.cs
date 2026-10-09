@@ -107,6 +107,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
         RegisterEventHandler<EventPlayerDisconnect>(OnDisconnect);
         RegisterEventHandler<EventRoundStart>(OnRoundStart);
         RegisterEventHandler<EventPlayerDeath>(OnDeath);
+        RegisterEventHandler<EventPlayerSpawn>(OnSpawn);
+        RegisterListener<Listeners.CheckTransmit>(OnCheckTransmit);
         AddCommandListener("jointeam", OnJoinTeam);
         AddTimer(1f, Tick, TimerFlags.REPEAT);
         ApplyRules();
@@ -118,9 +120,11 @@ public sealed class ServersDuelsPlugin : BasePlugin
     }
 
     // The round is only a frame for the arenas: it must neither end when a
-    // side is wiped out nor respawn anyone on its own. Every arena's Ts (and
-    // CTs) are one team, and teammates' names show through walls and on the
-    // radar, so as enemies the next arena stays hidden.
+    // side is wiped out nor respawn anyone on its own (the server boots as
+    // Deathmatch, for its HUD), and Deathmatch's random spawns, spawn
+    // immunity and bonus weapons stay off. Every arena's Ts (and CTs) are one
+    // team, and teammates' names show through walls and on the radar, so as
+    // enemies the next arena stays hidden.
     private static void ApplyRules() =>
         Server.ExecuteCommand(string.Join(';', new[]
         {
@@ -133,7 +137,107 @@ public sealed class ServersDuelsPlugin : BasePlugin
             "mp_respawn_on_death_t 0",
             "mp_respawn_on_death_ct 0",
             "mp_join_grace_time 0",
+            "mp_randomspawn 0",
+            "mp_respawn_immunitytime 0",
+            "mp_dm_bonus_length_max 0",
+            "mp_dm_bonus_length_min 0",
+            "mp_dm_time_between_bonus_max 9999",
+            "mp_dm_time_between_bonus_min 9999",
+            "mp_buytime 0",
         }));
+
+    // Players of other arenas are not sent to a duellist at all, so their
+    // shots, steps, names and models never reach the client. A dead or
+    // spectating player sees everyone: hiding the pawn they watch would crash
+    // their game.
+    private void OnCheckTransmit(CCheckTransmitInfoList infoList)
+    {
+        if (!_live)
+        {
+            return;
+        }
+
+        List<(int Arena, List<uint> Entities)>? placed = null;
+
+        foreach (var (info, viewer) in infoList)
+        {
+            if (viewer is not { IsValid: true } || ArenaOf(viewer.Slot) is not int mine || !IsAlive(viewer))
+            {
+                continue;
+            }
+
+            placed ??= Placed();
+
+            foreach (var (arena, entities) in placed)
+            {
+                if (arena == mine)
+                {
+                    continue;
+                }
+
+                foreach (var entity in entities)
+                {
+                    info.TransmitEntities.Remove(entity);
+                }
+            }
+        }
+    }
+
+    // Every placed player's pawn and the weapons on it, by arena.
+    private List<(int Arena, List<uint> Entities)> Placed()
+    {
+        var placed = new List<(int, List<uint>)>();
+
+        foreach (var player in Players.Humans())
+        {
+            if (ArenaOf(player.Slot) is not int arena || player.PlayerPawn.Value is not { IsValid: true } pawn)
+            {
+                continue;
+            }
+
+            var entities = new List<uint> { pawn.Index };
+
+            if (pawn.WeaponServices is { } weapons)
+            {
+                foreach (var weapon in weapons.MyWeapons)
+                {
+                    if (weapon.IsValid)
+                    {
+                        entities.Add(weapon.Index);
+                    }
+                }
+            }
+
+            placed.Add((arena, entities));
+        }
+
+        return placed;
+    }
+
+    // Deathmatch spawns a newcomer by itself, maybe on someone's arena: they
+    // go to an empty one at once.
+    private HookResult OnSpawn(EventPlayerSpawn @event, GameEventInfo info)
+    {
+        var player = @event.Userid;
+
+        if (!_live || !Players.IsHuman(player) || _duelOf.ContainsKey(player!.Slot))
+        {
+            return HookResult.Continue;
+        }
+
+        var slot = player.Slot;
+
+        if (!_free.TryGetValue(slot, out var free) || free.Arena == null)
+        {
+            Server.NextFrame(() =>
+            {
+                MakeFree(slot);
+                Match();
+            });
+        }
+
+        return HookResult.Continue;
+    }
 
     private void OnMapStart(string mapName)
     {
@@ -214,6 +318,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         EnsureArenas();
         ClearTeamScores();
+        ApplyRules();
 
         // The round's cleanup may take the signs with it.
         var placed = _signs.Place(_arenas);
