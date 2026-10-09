@@ -12,10 +12,12 @@ namespace ServersModes.Dm;
 // kill, the game's line-of-sight spawns, and a respawn delay each player picks.
 // The game does not respawn anyone (mp_respawn_on_death_* 0); this does, after
 // that player's delay, so "slow" can be slower than the game would be.
+// Expert bots keep the server full, and each player who joins takes a bot's
+// place (bot_quota_mode fill).
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.0.0";
+    public override string ModuleVersion => "1.1.0";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
 
@@ -37,6 +39,13 @@ public sealed class ServersDmPlugin : BasePlugin
     // A respawn that has not happened this long after it was due gets another try.
     private const float RespawnRetry = 2f;
 
+    // Players plus bots; every player who joins replaces one bot.
+    private const int BotQuota = 10;
+    private const float BotRespawnDelay = 1.5f;
+
+    private const string KillSound = "sounds/ui/armsrace_kill_01.vsnd_c";
+    private const string HeadshotSound = "sounds/buttons/bell1.vsnd_c";
+
     private LoadoutStore _loadouts = null!;
     private readonly Dictionary<int, float> _deadSince = new();
 
@@ -49,7 +58,6 @@ public sealed class ServersDmPlugin : BasePlugin
         _ = new MapVote(this, words, "dm", Maps, 5, MapEnd.Timed);
         _ = new SiteBanner(this);
         NoHealthshot.Register(this);
-        NoBots.Register(this);
 
         words.Add(this, "guns", "Choose your weapons", (player, _) => OpenPrimaries(player));
         words.Add(this, "ak", "Play with the AK-47", (player, _) => PickPrimary(player, "weapon_ak47"));
@@ -63,6 +71,7 @@ public sealed class ServersDmPlugin : BasePlugin
         words.Add(this, "slow", "Long respawn time", (player, _) => PickRespawn(player, RespawnSpeed.Slow));
         words.Add(this, "s", "Long respawn time", (player, _) => PickRespawn(player, RespawnSpeed.Slow));
         words.Add(this, "hs", "Headshots only: your body shots do no damage", (player, _) => ToggleHeadshots(player));
+        words.Add(this, "sounds", "Turn the kill sounds on or off", (player, _) => ToggleKillSounds(player));
 
         RegisterListener<Listeners.OnMapStart>(_ =>
         {
@@ -104,6 +113,13 @@ public sealed class ServersDmPlugin : BasePlugin
             "mp_death_drop_gun 0",
             "mp_weapons_allow_map_placed 0",
             "sv_infinite_ammo 2",
+            $"bot_quota {BotQuota}",
+            "bot_quota_mode fill",
+            "bot_difficulty 3",
+            "bot_join_after_player 0",
+            "bot_join_team any",
+            "bot_chatter off",
+            "mp_autokick 0",
         }));
 
     private static float DelayOf(RespawnSpeed speed) =>
@@ -120,11 +136,17 @@ public sealed class ServersDmPlugin : BasePlugin
     private static bool IsAlive(CCSPlayerController player) =>
         player.PlayerPawn.Value is { LifeState: (byte)LifeState_t.LIFE_ALIVE };
 
+    private static bool IsFighter(CCSPlayerController? player) =>
+        player is { IsValid: true, IsHLTV: false } && (player.IsBot || Players.IsHuman(player));
+
+    private static IEnumerable<CCSPlayerController> Fighters() =>
+        Utilities.GetPlayers().Where(IsFighter);
+
     private HookResult OnSpawn(EventPlayerSpawn @event, GameEventInfo info)
     {
         var player = @event.Userid;
 
-        if (!Players.IsHuman(player))
+        if (!IsFighter(player))
         {
             return HookResult.Continue;
         }
@@ -141,11 +163,15 @@ public sealed class ServersDmPlugin : BasePlugin
             return;
         }
 
-        var loadout = _loadouts.For(player.SteamID);
+        var (primary, secondary) = player.IsBot
+            ? (Weapons.BotPrimaries[Random.Shared.Next(Weapons.BotPrimaries.Length)],
+                Weapons.BotSecondaries[Random.Shared.Next(Weapons.BotSecondaries.Length)])
+            : (_loadouts.For(player.SteamID).Primary, _loadouts.For(player.SteamID).Secondary);
+
         player.RemoveWeapons();
         player.GiveNamedItem("weapon_knife");
-        player.GiveNamedItem(loadout.Secondary);
-        player.GiveNamedItem(loadout.Primary);
+        player.GiveNamedItem(secondary);
+        player.GiveNamedItem(primary);
         player.GiveNamedItem("item_assaultsuit");
         pawn.Health = 100;
         Utilities.SetStateChanged(pawn, "CBaseEntity", "m_iHealth");
@@ -156,14 +182,19 @@ public sealed class ServersDmPlugin : BasePlugin
         var victim = @event.Userid;
         var attacker = @event.Attacker;
 
-        if (Players.IsHuman(victim))
+        if (IsFighter(victim))
         {
             _deadSince[victim!.Slot] = Server.CurrentTime;
         }
 
-        if (Players.IsHuman(attacker) && attacker != victim)
+        if (IsFighter(attacker) && attacker != victim)
         {
             Server.NextFrame(() => Reward(attacker!));
+
+            if (Players.IsHuman(attacker) && _loadouts.For(attacker!.SteamID).KillSounds)
+            {
+                attacker.ExecuteClientCommand($"play {(@event.Headshot ? HeadshotSound : KillSound)}");
+            }
         }
 
         return HookResult.Continue;
@@ -204,7 +235,7 @@ public sealed class ServersDmPlugin : BasePlugin
     {
         var now = Server.CurrentTime;
 
-        foreach (var player in Players.Humans())
+        foreach (var player in Fighters())
         {
             if (!OnTeam(player) || IsAlive(player))
             {
@@ -219,7 +250,8 @@ public sealed class ServersDmPlugin : BasePlugin
                 continue;
             }
 
-            var due = since + DelayOf(_loadouts.For(player.SteamID).Respawn);
+            var delay = player.IsBot ? BotRespawnDelay : DelayOf(_loadouts.For(player.SteamID).Respawn);
+            var due = since + delay;
 
             if (now >= due)
             {
@@ -251,7 +283,7 @@ public sealed class ServersDmPlugin : BasePlugin
             }
 
             Chat.To(player, $"Welcome to {ChatColors.Gold}Deathmatch{ChatColors.Default}: health, armour and ammo back on every kill.");
-            Chat.To(player, $"{ChatColors.Green}!guns{ChatColors.Default} weapons · {ChatColors.Green}!fast !medium !slow{ChatColors.Default} respawn · {ChatColors.Green}!hs{ChatColors.Default} headshots only · {ChatColors.Green}!rtv !nominate !timeleft");
+            Chat.To(player, $"{ChatColors.Green}!guns{ChatColors.Default} weapons · {ChatColors.Green}!fast !medium !slow{ChatColors.Default} respawn · {ChatColors.Green}!hs{ChatColors.Default} headshots only · {ChatColors.Green}!sounds{ChatColors.Default} kill sounds · {ChatColors.Green}!rtv !nominate !timeleft");
         }, TimerFlags.STOP_ON_MAPCHANGE);
 
         return HookResult.Continue;
@@ -325,6 +357,16 @@ public sealed class ServersDmPlugin : BasePlugin
         Chat.To(player, loadout.HeadshotsOnly
             ? $"Headshots only: {ChatColors.Green}ON{ChatColors.Default}. Only your headshots do damage."
             : $"Headshots only: {ChatColors.LightRed}OFF");
+    }
+
+    private void ToggleKillSounds(CCSPlayerController player)
+    {
+        var loadout = _loadouts.For(player.SteamID);
+        loadout.KillSounds = !loadout.KillSounds;
+        _loadouts.Save();
+        Chat.To(player, loadout.KillSounds
+            ? $"Kill sounds: {ChatColors.Green}ON"
+            : $"Kill sounds: {ChatColors.LightRed}OFF");
     }
 
     private HookResult OnTakeDamage(CBaseEntity entity, CTakeDamageInfo info)
