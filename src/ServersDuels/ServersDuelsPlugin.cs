@@ -1,3 +1,4 @@
+using System.Net;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
@@ -10,12 +11,18 @@ using ServersModes.Shared;
 
 namespace ServersModes.Duels;
 
+// Every arena runs on its own inside one round that never ends: a duel is
+// over at the first death, and a couple of seconds later both players are
+// free again. Free players are paired by rating, the best pairs on the
+// lowest arenas, so nobody waits for the slowest arena and the strong end up
+// facing the strong. Whoever has nobody to face yet stands alone in an empty
+// arena rather than in spectate.
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.0.9";
+    public override string ModuleVersion => "1.1.0";
     public override string ModuleAuthor => "kian";
-    public override string ModuleDescription => "1v1 arenas on a ladder, and the Duels map rotation.";
+    public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
 
     // Until the pool kept on the site arrives.
     private static readonly ServerMap[] Maps =
@@ -25,15 +32,39 @@ public sealed class ServersDuelsPlugin : BasePlugin
         new("Redline", "3139172262"),
     ];
 
+    // The winner's moment, and time for whoever else finishes to join the
+    // next pairing.
+    private const float NextDuelAfter = 2f;
+
+    // A pair that just met stays apart this long so that arenas mix instead of
+    // replaying the same duel; with nobody else free they meet again anyway.
+    private const float RematchAfter = 6f;
+
+    // Out of time with both alive, the healthier player takes it.
+    private const float DuelSeconds = 60f;
+
+    private const double StartRating = 1000;
+    private const double RatingStep = 32;
+
     private sealed class Duel
     {
         public required int Arena { get; init; }
         public required int T { get; init; }
-        public required int? Ct { get; init; }
+        public required int Ct { get; init; }
         public required RoundType Round { get; init; }
-        public int? Winner { get; set; }
+        public required float Started { get; init; }
+        public bool Over { get; set; }
 
-        public int? Opponent(int slot) => slot == T ? Ct : T;
+        public int Opponent(int slot) => slot == T ? Ct : T;
+    }
+
+    private sealed class Free
+    {
+        public float Since { get; init; }
+        public int? LastOpponent { get; init; }
+
+        // The empty arena they wait in, if they have one.
+        public int? Arena { get; set; }
     }
 
     private readonly Random _random = new();
@@ -41,16 +72,17 @@ public sealed class ServersDuelsPlugin : BasePlugin
     private List<Arena> _arenas = new();
     private bool _arenasFound;
     private readonly ArenaSigns _signs = new();
-    private ArenaSounds _sounds = null!;
     private bool _signsLogged;
+    private ArenaSounds _sounds = null!;
 
-    // Ladder order: the two players of arena n are at 2n and 2n+1.
-    private readonly List<int> _ladder = new();
-    private readonly List<int> _queue = new();
-    private readonly HashSet<int> _afk = new();
+    private readonly List<Duel> _duels = new();
     private readonly Dictionary<int, Duel> _duelOf = new();
-    private List<Duel> _duels = new();
-    private bool _roundLive;
+    private readonly Dictionary<int, Free> _free = new();
+    private readonly HashSet<int> _afk = new();
+    private bool _live;
+
+    // By SteamID, for as long as the server runs: a map change keeps the order.
+    private readonly Dictionary<ulong, double> _ratings = new();
 
     // Wins between two players on this map, keyed by their SteamIDs in order:
     // each pair keeps its own score, as the teams' score means nothing here.
@@ -63,54 +95,59 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "duels", Maps, 4, MapEnd.Timed);
-        _sounds = new ArenaSounds(this, Logger, slot => _duelOf.TryGetValue(slot, out var duel) ? duel.Arena : null);
+        _sounds = new ArenaSounds(this, Logger, ArenaOf);
 
         words.Add(this, "guns", "Choose your rifle and pistol", (player, _) => OpenGuns(player));
         words.Add(this, "rounds", "Choose the round types you play", (player, _) => OpenRounds(player));
-        words.Add(this, "queue", "Your place in the ladder or the queue", (player, _) => ShowQueue(player));
+        words.Add(this, "queue", "Your arena, rating and status", (player, _) => ShowStatus(player));
         words.Add(this, "afk", "Step out of the rotation, or come back", (player, _) => ToggleAfk(player));
 
         RegisterListener<Listeners.OnMapStart>(OnMapStart);
         RegisterEventHandler<EventPlayerConnectFull>(OnConnect);
         RegisterEventHandler<EventPlayerDisconnect>(OnDisconnect);
-        RegisterEventHandler<EventRoundPrestart>(OnRoundPrestart);
         RegisterEventHandler<EventRoundStart>(OnRoundStart);
-        RegisterEventHandler<EventPlayerSpawn>(OnSpawn);
         RegisterEventHandler<EventPlayerDeath>(OnDeath);
-        RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
         AddCommandListener("jointeam", OnJoinTeam);
-        AddTimer(1f, ShowScores, TimerFlags.REPEAT);
-        IsolateArenas();
+        AddTimer(1f, Tick, TimerFlags.REPEAT);
+        ApplyRules();
 
         if (hotReload)
         {
-            foreach (var player in Players.Humans())
-            {
-                Enqueue(player.Slot);
-            }
+            Server.NextFrame(StartArenas);
         }
     }
 
-    // Every arena's Ts (and CTs) are one team, and teammates' names show
-    // through walls and on the radar: as enemies, the next arena stays hidden.
-    private static void IsolateArenas() => Server.ExecuteCommand("mp_teammates_are_enemies 1");
+    // The round is only a frame for the arenas: it must neither end when a
+    // side is wiped out nor respawn anyone on its own. Every arena's Ts (and
+    // CTs) are one team, and teammates' names show through walls and on the
+    // radar, so as enemies the next arena stays hidden.
+    private static void ApplyRules() =>
+        Server.ExecuteCommand(string.Join(';', new[]
+        {
+            "mp_teammates_are_enemies 1",
+            "mp_ignore_round_win_conditions 1",
+            "mp_roundtime 60",
+            "mp_roundtime_defuse 60",
+            "mp_roundtime_hostage 60",
+            "mp_freezetime 0",
+            "mp_respawn_on_death_t 0",
+            "mp_respawn_on_death_ct 0",
+            "mp_join_grace_time 0",
+        }));
 
     private void OnMapStart(string mapName)
     {
-        IsolateArenas();
+        ApplyRules();
         _arenas = new();
         _arenasFound = false;
         _signs.Clear();
         _signsLogged = false;
-        _duels = new();
-        _duelOf.Clear();
-        _roundLive = false;
-        _scores.Clear();
         _sounds.Reset();
-
-        // A new map is a new ladder, but the order players had carries over.
-        _queue.InsertRange(0, _ladder);
-        _ladder.Clear();
+        _duels.Clear();
+        _duelOf.Clear();
+        _free.Clear();
+        _scores.Clear();
+        _live = false;
     }
 
     private void EnsureArenas()
@@ -134,19 +171,470 @@ public sealed class ServersDuelsPlugin : BasePlugin
             : null;
     }
 
-    private void Enqueue(int slot)
+    private static bool IsAlive(CCSPlayerController player) =>
+        player.PlayerPawn.Value is { LifeState: (byte)LifeState_t.LIFE_ALIVE };
+
+    private int? ArenaOf(int slot)
     {
-        if (!_ladder.Contains(slot) && !_queue.Contains(slot) && !_afk.Contains(slot))
+        if (_duelOf.TryGetValue(slot, out var duel))
         {
-            _queue.Add(slot);
+            return duel.Arena;
+        }
+
+        return _free.TryGetValue(slot, out var free) ? free.Arena : null;
+    }
+
+    // Free from the start: no rematch to hold back.
+    private void MakeFree(int slot)
+    {
+        if (!_afk.Contains(slot) && !_duelOf.ContainsKey(slot) && !_free.ContainsKey(slot) && PlayerAt(slot) != null)
+        {
+            _free[slot] = new Free { Since = Server.CurrentTime - RematchAfter };
         }
     }
 
-    private void Forget(int slot)
+    private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
     {
-        _ladder.Remove(slot);
-        _queue.Remove(slot);
-        _afk.Remove(slot);
+        Server.NextFrame(StartArenas);
+        return HookResult.Continue;
+    }
+
+    // A fresh round (the end of warmup, a restart) starts every arena over.
+    private void StartArenas()
+    {
+        _duels.Clear();
+        _duelOf.Clear();
+        _free.Clear();
+        _live = false;
+
+        if (Players.IsWarmup())
+        {
+            return;
+        }
+
+        EnsureArenas();
+        ClearTeamScores();
+
+        // The round's cleanup may take the signs with it.
+        var placed = _signs.Place(_arenas);
+
+        if (!_signsLogged)
+        {
+            _signsLogged = true;
+            Logger.LogInformation("{Map}: placed {Count} signs", Server.MapName, placed);
+        }
+
+        if (_arenas.Count == 0)
+        {
+            return;
+        }
+
+        _live = true;
+
+        foreach (var human in Players.Humans())
+        {
+            MakeFree(human.Slot);
+        }
+
+        Match();
+    }
+
+    private void Tick()
+    {
+        if (!_live)
+        {
+            return;
+        }
+
+        var now = Server.CurrentTime;
+
+        foreach (var duel in _duels.Where(duel => !duel.Over && now - duel.Started > DuelSeconds).ToList())
+        {
+            Finish(duel, TimeoutWinner(duel));
+        }
+
+        Match();
+        ShowScores();
+    }
+
+    private double Rating(int slot) =>
+        PlayerAt(slot) is { } player && _ratings.TryGetValue(player.SteamID, out var rating) ? rating : StartRating;
+
+    private void Match()
+    {
+        if (!_live)
+        {
+            return;
+        }
+
+        foreach (var gone in _free.Keys.Where(slot => PlayerAt(slot) == null || _afk.Contains(slot)).ToList())
+        {
+            _free.Remove(gone);
+        }
+
+        var now = Server.CurrentTime;
+        var free = _free.Keys.OrderByDescending(Rating).ToList();
+        var paired = new HashSet<int>();
+
+        foreach (var first in free)
+        {
+            if (paired.Contains(first))
+            {
+                continue;
+            }
+
+            var second = free.Where(slot => slot != first && !paired.Contains(slot)).Cast<int?>().FirstOrDefault(slot => MayMeet(first, slot!.Value, now));
+
+            if (second is not int other || FreeArena(first, other) is not int arena)
+            {
+                continue;
+            }
+
+            paired.Add(first);
+            paired.Add(other);
+            Start(arena, first, other);
+        }
+
+        foreach (var slot in _free.Keys.ToList())
+        {
+            Wait(slot);
+        }
+    }
+
+    private bool MayMeet(int first, int second, float now)
+    {
+        var a = _free[first];
+        var b = _free[second];
+        var justMet = a.LastOpponent == second || b.LastOpponent == first;
+
+        // Nobody else will come free: they might as well go again.
+        return !justMet || _duels.Count == 0 || now - Math.Max(a.Since, b.Since) >= RematchAfter;
+    }
+
+    // The lowest arena nobody fights or waits in, but for the two about to use it.
+    private int? FreeArena(params int[] coming)
+    {
+        var taken = _duels.Select(duel => duel.Arena)
+            .Concat(_free.Where(entry => !coming.Contains(entry.Key) && entry.Value.Arena != null).Select(entry => entry.Value.Arena!.Value))
+            .ToHashSet();
+
+        for (var arena = 0; arena < _arenas.Count; arena++)
+        {
+            if (!taken.Contains(arena))
+            {
+                return arena;
+            }
+        }
+
+        return null;
+    }
+
+    private void Start(int arena, int first, int second)
+    {
+        _free.Remove(first);
+        _free.Remove(second);
+
+        var swap = _random.Next(2) == 0;
+        var duel = new Duel
+        {
+            Arena = arena,
+            T = swap ? second : first,
+            Ct = swap ? first : second,
+            Round = PickRound(first, second),
+            Started = Server.CurrentTime,
+        };
+
+        _duels.Add(duel);
+        _duelOf[first] = duel;
+        _duelOf[second] = duel;
+
+        Enter(duel.T, CsTeam.Terrorist, Tag(duel, duel.T), () => Arm(duel, duel.T));
+        Enter(duel.Ct, CsTeam.CounterTerrorist, Tag(duel, duel.Ct), () => Arm(duel, duel.Ct));
+    }
+
+    // Onto a side and alive, then whatever comes next once the pawn exists.
+    private void Enter(int slot, CsTeam team, string tag, Action then)
+    {
+        if (PlayerAt(slot) is not { } player)
+        {
+            return;
+        }
+
+        if (player.Team != team)
+        {
+            if (player.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist)
+            {
+                player.SwitchTeam(team);
+            }
+            else
+            {
+                player.ChangeTeam(team);
+            }
+        }
+
+        player.Clan = tag;
+        Utilities.SetStateChanged(player, "CCSPlayerController", "m_szClan");
+
+        if (!IsAlive(player))
+        {
+            player.Respawn();
+        }
+
+        AddTimer(0.15f, then, TimerFlags.STOP_ON_MAPCHANGE);
+    }
+
+    // A player who has just picked a side may not respawn on the first try.
+    private void Arm(Duel duel, int slot, int attempt = 0)
+    {
+        if (duel.Over || !_duelOf.TryGetValue(slot, out var current) || current != duel || PlayerAt(slot) is not { } player)
+        {
+            return;
+        }
+
+        var pawn = player.PlayerPawn.Value;
+
+        if (pawn is not { LifeState: (byte)LifeState_t.LIFE_ALIVE })
+        {
+            if (attempt < 5)
+            {
+                player.Respawn();
+                AddTimer(0.2f, () => Arm(duel, slot, attempt + 1), TimerFlags.STOP_ON_MAPCHANGE);
+            }
+
+            return;
+        }
+
+        var arena = _arenas[duel.Arena % _arenas.Count];
+        var spot = (slot == duel.T ? arena.T : arena.Ct)[0];
+        pawn.Teleport(spot.Origin, spot.Angles, new Vector(0, 0, 0));
+        Heal(pawn);
+
+        var preferences = _preferences.For(player.SteamID);
+        player.RemoveWeapons();
+        player.GiveNamedItem("weapon_knife");
+
+        switch (duel.Round)
+        {
+            case RoundType.Rifle:
+                player.GiveNamedItem(preferences.Rifle);
+                break;
+            case RoundType.Awp:
+                player.GiveNamedItem("weapon_awp");
+                break;
+            case RoundType.Scout:
+                player.GiveNamedItem("weapon_ssg08");
+                break;
+        }
+
+        player.GiveNamedItem(preferences.Pistol);
+        player.GiveNamedItem(duel.Round == RoundType.Pistol ? "item_kevlar" : "item_assaultsuit");
+
+        var opponent = PlayerAt(duel.Opponent(slot));
+        var (mine, theirs) = Score(slot, duel.Opponent(slot));
+        Chat.To(player, $"{ChatColors.Gold}Arena {duel.Arena + 1}{ChatColors.Default} · {Weapons.RoundName(duel.Round)} · vs {ChatColors.LightRed}{opponent?.PlayerName}{ChatColors.Default} · {ChatColors.Green}{mine}{ChatColors.Default}-{ChatColors.LightRed}{theirs}");
+    }
+
+    private static void Heal(CCSPlayerPawn pawn)
+    {
+        pawn.Health = 100;
+        Utilities.SetStateChanged(pawn, "CBaseEntity", "m_iHealth");
+    }
+
+    // Alone in an empty arena until someone comes free; in spectate only when
+    // every arena is taken.
+    private void Wait(int slot)
+    {
+        if (!_free.TryGetValue(slot, out var free) || PlayerAt(slot) is not { } player)
+        {
+            return;
+        }
+
+        var inDuelArena = free.Arena is int held && _duels.Any(duel => duel.Arena == held);
+
+        if (free.Arena != null && !inDuelArena && IsAlive(player))
+        {
+            return;
+        }
+
+        if (inDuelArena)
+        {
+            free.Arena = null;
+        }
+
+        if (free.Arena == null)
+        {
+            free.Arena = FreeArena(slot);
+        }
+
+        if (free.Arena is not int arena)
+        {
+            if (player.Team != CsTeam.Spectator)
+            {
+                player.ChangeTeam(CsTeam.Spectator);
+            }
+
+            Tagged(player, "QUEUE");
+            return;
+        }
+
+        var team = player.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist ? player.Team : CsTeam.Terrorist;
+        Enter(slot, team, $"ARENA {arena + 1}", () =>
+        {
+            if (!_free.TryGetValue(slot, out var still) || still.Arena != arena || PlayerAt(slot) is not { } waiting)
+            {
+                return;
+            }
+
+            var pawn = waiting.PlayerPawn.Value;
+
+            if (pawn is not { LifeState: (byte)LifeState_t.LIFE_ALIVE })
+            {
+                return;
+            }
+
+            var spot = _arenas[arena].T[0];
+            pawn.Teleport(spot.Origin, spot.Angles, new Vector(0, 0, 0));
+            Heal(pawn);
+            waiting.RemoveWeapons();
+            waiting.GiveNamedItem("weapon_knife");
+        });
+    }
+
+    private static void Tagged(CCSPlayerController player, string tag)
+    {
+        player.Clan = tag;
+        Utilities.SetStateChanged(player, "CCSPlayerController", "m_szClan");
+    }
+
+    private HookResult OnDeath(EventPlayerDeath @event, GameEventInfo info)
+    {
+        var victim = @event.Userid;
+
+        if (_live && victim is { IsValid: true } && _duelOf.TryGetValue(victim.Slot, out var duel) && !duel.Over)
+        {
+            Finish(duel, duel.Opponent(victim.Slot));
+        }
+
+        return HookResult.Continue;
+    }
+
+    // A null winner is a draw: out of time on equal health.
+    private void Finish(Duel duel, int? winner)
+    {
+        if (duel.Over)
+        {
+            return;
+        }
+
+        duel.Over = true;
+
+        if (winner is int won)
+        {
+            var lost = duel.Opponent(won);
+            AddWin(won, lost);
+            var change = Rate(won, lost);
+            Tell(won, lost, true, change);
+            Tell(lost, won, false, -change);
+        }
+        else
+        {
+            foreach (var slot in new[] { duel.T, duel.Ct })
+            {
+                if (PlayerAt(slot) is { } player)
+                {
+                    Chat.To(player, "Out of time on equal health — a draw.");
+                }
+            }
+        }
+
+        AddTimer(NextDuelAfter, () => Release(duel), TimerFlags.STOP_ON_MAPCHANGE);
+    }
+
+    private void Release(Duel duel)
+    {
+        if (!_duels.Remove(duel))
+        {
+            return;
+        }
+
+        var now = Server.CurrentTime;
+
+        foreach (var slot in new[] { duel.T, duel.Ct })
+        {
+            if (_duelOf.TryGetValue(slot, out var current) && current == duel)
+            {
+                _duelOf.Remove(slot);
+            }
+
+            if (PlayerAt(slot) is { } player && !_afk.Contains(slot))
+            {
+                // A survivor waits where they stand.
+                _free[slot] = new Free
+                {
+                    Since = now,
+                    LastOpponent = duel.Opponent(slot),
+                    Arena = IsAlive(player) ? duel.Arena : null,
+                };
+            }
+        }
+
+        Match();
+    }
+
+    private int? TimeoutWinner(Duel duel)
+    {
+        var tHealth = Health(duel.T);
+        var ctHealth = Health(duel.Ct);
+
+        if (tHealth == ctHealth)
+        {
+            return null;
+        }
+
+        return tHealth > ctHealth ? duel.T : duel.Ct;
+    }
+
+    private static int Health(int slot)
+    {
+        var pawn = PlayerAt(slot)?.PlayerPawn.Value;
+        return pawn is { LifeState: (byte)LifeState_t.LIFE_ALIVE } ? pawn.Health : 0;
+    }
+
+    // Elo: beating a stronger player moves both further than beating a weaker one.
+    private int Rate(int winner, int loser)
+    {
+        if (PlayerAt(winner) is not { } won || PlayerAt(loser) is not { } lost)
+        {
+            return 0;
+        }
+
+        var winnerRating = Rating(winner);
+        var loserRating = Rating(loser);
+        var expected = 1 / (1 + Math.Pow(10, (loserRating - winnerRating) / 400));
+        var change = RatingStep * (1 - expected);
+
+        _ratings[won.SteamID] = winnerRating + change;
+        _ratings[lost.SteamID] = loserRating - change;
+        return (int)Math.Round(change);
+    }
+
+    private void Tell(int slot, int opponent, bool won, int change)
+    {
+        if (PlayerAt(slot) is not { } player)
+        {
+            return;
+        }
+
+        var (mine, theirs) = Score(slot, opponent);
+        var name = PlayerAt(opponent)?.PlayerName ?? "your opponent";
+        var rating = $"rating {(int)Math.Round(Rating(slot))} ({(change >= 0 ? "+" : "")}{change})";
+
+        Chat.To(
+            player,
+            won
+                ? $"{ChatColors.Green}You won{ChatColors.Default} vs {name} ({mine}-{theirs}) — {rating}."
+                : $"{ChatColors.LightRed}You lost{ChatColors.Default} vs {name} ({mine}-{theirs}) — {rating}."
+        );
     }
 
     private HookResult OnConnect(EventPlayerConnectFull @event, GameEventInfo info)
@@ -159,11 +647,11 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
 
         Forget(player!.Slot);
-        Enqueue(player.Slot);
+        MakeFree(player.Slot);
 
         AddTimer(5f, () =>
         {
-            Chat.To(player, $"Welcome to {ChatColors.Gold}Duels{ChatColors.Default}: win your 1v1 to move up an arena, lose and you move down.");
+            Chat.To(player, $"Welcome to {ChatColors.Gold}Duels{ChatColors.Default}: every kill brings your next opponent right away, matched to your level.");
             Chat.To(player, $"{ChatColors.Green}!guns{ChatColors.Default} weapons · {ChatColors.Green}!rounds{ChatColors.Default} round types · {ChatColors.Green}!queue{ChatColors.Default} · {ChatColors.Green}!afk{ChatColors.Default} · {ChatColors.Green}!rtv");
         }, TimerFlags.STOP_ON_MAPCHANGE);
 
@@ -172,24 +660,27 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
     private HookResult OnDisconnect(EventPlayerDisconnect @event, GameEventInfo info)
     {
-        var player = @event.Userid;
-
-        if (player is not { IsValid: true })
+        if (@event.Userid is { IsValid: true } player)
         {
-            return HookResult.Continue;
+            Forget(player.Slot);
         }
 
-        var slot = player.Slot;
-        Forget(slot);
-
-        if (_roundLive && _duelOf.TryGetValue(slot, out var duel) && duel.Winner == null && duel.Opponent(slot) is int opponent)
-        {
-            duel.Winner = opponent;
-            Server.NextFrame(EndRoundIfDecided);
-        }
-
-        _duelOf.Remove(slot);
         return HookResult.Continue;
+    }
+
+    private void Forget(int slot)
+    {
+        _free.Remove(slot);
+        _afk.Remove(slot);
+        Forfeit(slot);
+    }
+
+    private void Forfeit(int slot)
+    {
+        if (_duelOf.TryGetValue(slot, out var duel) && !duel.Over)
+        {
+            Finish(duel, duel.Opponent(slot));
+        }
     }
 
     // Teams are the arenas' business: a player can sit out (spectator) or come
@@ -222,7 +713,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         if (player.Team == CsTeam.None)
         {
-            Enqueue(slot);
+            MakeFree(slot);
             return HookResult.Continue;
         }
 
@@ -230,114 +721,10 @@ public sealed class ServersDuelsPlugin : BasePlugin
         return HookResult.Handled;
     }
 
-    private HookResult OnRoundPrestart(EventRoundPrestart @event, GameEventInfo info)
-    {
-        _duels = new();
-        _duelOf.Clear();
-        _roundLive = false;
-        ClearTeamScores();
-        IsolateArenas();
-
-        if (Players.IsWarmup())
-        {
-            return HookResult.Continue;
-        }
-
-        EnsureArenas();
-
-        _ladder.RemoveAll(slot => PlayerAt(slot) == null || _afk.Contains(slot));
-        _queue.RemoveAll(slot => PlayerAt(slot) == null || _afk.Contains(slot) || _ladder.Contains(slot));
-
-        foreach (var human in Players.Humans().Where(human => !_afk.Contains(human.Slot)))
-        {
-            Enqueue(human.Slot);
-        }
-
-        if (_arenas.Count == 0)
-        {
-            return HookResult.Continue;
-        }
-
-        var capacity = _arenas.Count * 2;
-
-        while (_ladder.Count < capacity && _queue.Count > 0)
-        {
-            _ladder.Add(_queue[0]);
-            _queue.RemoveAt(0);
-        }
-
-        // An odd player out gets the last arena to themselves rather than a
-        // seat in spectate, and is paired at round end (see OnRoundEnd).
-        for (var arena = 0; arena * 2 < _ladder.Count; arena++)
-        {
-            var first = _ladder[arena * 2];
-            int? second = arena * 2 + 1 < _ladder.Count ? _ladder[arena * 2 + 1] : null;
-            var swap = second != null && _random.Next(2) == 0;
-
-            var duel = new Duel
-            {
-                Arena = arena,
-                T = swap ? second!.Value : first,
-                Ct = swap ? first : second,
-                Round = PickRound(first, second),
-            };
-
-            _duels.Add(duel);
-            _duelOf[duel.T] = duel;
-
-            if (duel.Ct is int ct)
-            {
-                _duelOf[ct] = duel;
-            }
-        }
-
-        foreach (var duel in _duels)
-        {
-            Place(duel.T, CsTeam.Terrorist, Tag(duel, duel.T));
-
-            if (duel.Ct is int ct)
-            {
-                Place(ct, CsTeam.CounterTerrorist, Tag(duel, ct));
-            }
-        }
-
-        foreach (var slot in _queue)
-        {
-            Place(slot, CsTeam.Spectator, "QUEUE");
-        }
-
-        foreach (var slot in _afk)
-        {
-            Place(slot, CsTeam.Spectator, "AFK");
-        }
-
-        _roundLive = true;
-        return HookResult.Continue;
-    }
-
-    // The round's cleanup may take the signs with it, so they go up again on
-    // every round start.
-    private HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
-    {
-        Server.NextFrame(() =>
-        {
-            EnsureArenas();
-            var placed = _signs.Place(_arenas);
-
-            if (!_signsLogged)
-            {
-                _signsLogged = true;
-                Logger.LogInformation("{Map}: placed {Count} signs", Server.MapName, placed);
-            }
-        });
-
-        return HookResult.Continue;
-    }
-
-    private RoundType PickRound(int first, int? second)
+    private RoundType PickRound(int first, int second)
     {
         var mine = Preferences(first)?.Rounds ?? Enum.GetValues<RoundType>().ToList();
-        var theirs = second is int other ? Preferences(other)?.Rounds ?? mine : mine;
+        var theirs = Preferences(second)?.Rounds ?? mine;
         var shared = mine.Intersect(theirs).ToList();
 
         if (shared.Count == 0)
@@ -348,14 +735,12 @@ public sealed class ServersDuelsPlugin : BasePlugin
         return shared[_random.Next(shared.Count)];
     }
 
+    private PlayerPreferences? Preferences(int slot) =>
+        PlayerAt(slot) is { } player ? _preferences.For(player.SteamID) : null;
+
     private string Tag(Duel duel, int slot)
     {
-        if (duel.Opponent(slot) is not int opponent)
-        {
-            return $"ARENA {duel.Arena + 1}";
-        }
-
-        var (mine, theirs) = Score(slot, opponent);
+        var (mine, theirs) = Score(slot, duel.Opponent(slot));
         return $"ARENA {duel.Arena + 1} | {mine}-{theirs}";
     }
 
@@ -394,8 +779,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         wins[PlayerAt(winner)!.SteamID == pair.Item1 ? 0 : 1]++;
     }
 
-    // Every arena's winner would count for their side; nobody's score is the
-    // sum of everyone's duels, so the teams stay at zero.
+    // The teams' score is the same for everyone and means nothing here.
     private static void ClearTeamScores()
     {
         foreach (var team in Utilities.FindAllEntitiesByDesignerName<CTeam>("cs_team_manager"))
@@ -408,133 +792,22 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
     }
 
-    private PlayerPreferences? Preferences(int slot) =>
-        PlayerAt(slot) is { } player ? _preferences.For(player.SteamID) : null;
-
-    private static void Place(int slot, CsTeam team, string tag)
-    {
-        var player = PlayerAt(slot);
-
-        if (player == null)
-        {
-            return;
-        }
-
-        if (player.Team != team)
-        {
-            if (team == CsTeam.Spectator)
-            {
-                player.ChangeTeam(team);
-            }
-            else
-            {
-                player.SwitchTeam(team);
-            }
-        }
-
-        player.Clan = tag;
-        Utilities.SetStateChanged(player, "CCSPlayerController", "m_szClan");
-    }
-
-    private HookResult OnSpawn(EventPlayerSpawn @event, GameEventInfo info)
-    {
-        var player = @event.Userid;
-
-        if (!Players.IsHuman(player) || Players.IsWarmup() || _arenas.Count == 0)
-        {
-            return HookResult.Continue;
-        }
-
-        var slot = player!.Slot;
-
-        if (!_duelOf.TryGetValue(slot, out var duel))
-        {
-            // Spawned outside the ladder (joined mid-freeze): standing on an
-            // arena spawn would put a third player in someone's duel.
-            if (player.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist)
-            {
-                Server.NextFrame(() =>
-                {
-                    if (player.IsValid)
-                    {
-                        player.ChangeTeam(CsTeam.Spectator);
-                    }
-                });
-            }
-
-            return HookResult.Continue;
-        }
-
-        AddTimer(0.1f, () => Arm(player, duel), TimerFlags.STOP_ON_MAPCHANGE);
-        return HookResult.Continue;
-    }
-
-    private void Arm(CCSPlayerController player, Duel duel)
-    {
-        var pawn = player.PlayerPawn.Value;
-
-        if (!player.IsValid || pawn is not { LifeState: (byte)LifeState_t.LIFE_ALIVE })
-        {
-            return;
-        }
-
-        var arena = _arenas[duel.Arena % _arenas.Count];
-        var isT = duel.T == player.Slot;
-        var spots = isT ? arena.T : arena.Ct;
-        var spot = spots[0];
-
-        pawn.Teleport(spot.Origin, spot.Angles, new Vector(0, 0, 0));
-
-        var preferences = _preferences.For(player.SteamID);
-        player.RemoveWeapons();
-        player.GiveNamedItem("weapon_knife");
-
-        switch (duel.Round)
-        {
-            case RoundType.Rifle:
-                player.GiveNamedItem(preferences.Rifle);
-                break;
-            case RoundType.Awp:
-                player.GiveNamedItem("weapon_awp");
-                break;
-            case RoundType.Scout:
-                player.GiveNamedItem("weapon_ssg08");
-                break;
-        }
-
-        player.GiveNamedItem(preferences.Pistol);
-        player.GiveNamedItem(duel.Round == RoundType.Pistol ? "item_kevlar" : "item_assaultsuit");
-
-        var other = duel.Opponent(player.Slot);
-        var opponent = other is int slot ? PlayerAt(slot)?.PlayerName : null;
-        var (mine, theirs) = other is int them ? Score(player.Slot, them) : (0, 0);
-        var round = Weapons.RoundName(duel.Round);
-
-        Chat.To(
-            player,
-            opponent == null
-                ? $"{ChatColors.Gold}Arena {duel.Arena + 1}{ChatColors.Default} · {round} · waiting for an opponent"
-                : $"{ChatColors.Gold}Arena {duel.Arena + 1}{ChatColors.Default} · {round} · vs {ChatColors.LightRed}{opponent}{ChatColors.Default} · {ChatColors.Green}{mine}{ChatColors.Default}-{ChatColors.LightRed}{theirs}"
-        );
-    }
-
     // The teams' score at the top is the same for everyone, so each duellist
-    // gets their own: arena, round and the score against their opponent, kept
-    // on screen until the next round's duels are drawn.
+    // gets their own: arena, round and the score against their opponent.
     private void ShowScores()
     {
-        if (Players.IsWarmup())
-        {
-            return;
-        }
-
         foreach (var duel in _duels)
         {
             ShowScore(duel, duel.T);
+            ShowScore(duel, duel.Ct);
+        }
 
-            if (duel.Ct is int ct)
+        foreach (var (slot, free) in _free)
+        {
+            if (PlayerAt(slot) is { } player)
             {
-                ShowScore(duel, ct);
+                var where = free.Arena is int arena ? $"<font color='#f5a524'>ARENA {arena + 1}</font> · " : "";
+                player.PrintToCenterHtml($"{where}Finding your next opponent…<br>Rating {(int)Math.Round(Rating(slot))}", 2);
             }
         }
     }
@@ -546,203 +819,13 @@ public sealed class ServersDuelsPlugin : BasePlugin
             return;
         }
 
-        var head = $"<font color='#f5a524'>ARENA {duel.Arena + 1}</font> · {Weapons.RoundName(duel.Round)}";
-
-        if (duel.Opponent(slot) is not int other || PlayerAt(other) is not { } opponent)
-        {
-            player.PrintToCenterHtml($"{head}<br>No opponent this round", 2);
-            return;
-        }
-
+        var other = duel.Opponent(slot);
         var (mine, theirs) = Score(slot, other);
-        var name = System.Net.WebUtility.HtmlEncode(opponent.PlayerName);
-        player.PrintToCenterHtml($"{head}<br><font color='#5ee35e'>YOU {mine}</font> : <font color='#ff6b6b'>{theirs} {name}</font>", 2);
-    }
-
-    private HookResult OnDeath(EventPlayerDeath @event, GameEventInfo info)
-    {
-        var victim = @event.Userid;
-
-        if (!_roundLive || victim is not { IsValid: true } || !_duelOf.TryGetValue(victim.Slot, out var duel))
-        {
-            return HookResult.Continue;
-        }
-
-        if (duel.Winner == null && duel.Opponent(victim.Slot) is int opponent)
-        {
-            duel.Winner = opponent;
-        }
-
-        Server.NextFrame(EndRoundIfDecided);
-        return HookResult.Continue;
-    }
-
-    // Each arena ends on its own; the round waits for the last one.
-    private void EndRoundIfDecided()
-    {
-        if (!_roundLive || _duels.Count == 0)
-        {
-            return;
-        }
-
-        var contested = _duels.Where(duel => duel.Ct != null).ToList();
-
-        if (contested.Count == 0 || contested.Any(duel => duel.Winner == null))
-        {
-            return;
-        }
-
-        _roundLive = false;
-
-        var lastWinner = PlayerAt(contested[^1].Winner!.Value);
-        var reason = lastWinner?.Team == CsTeam.CounterTerrorist ? RoundEndReason.CTsWin : RoundEndReason.TerroristsWin;
-        Players.Rules()?.TerminateRound(3f, reason);
-    }
-
-    private HookResult OnRoundEnd(EventRoundEnd @event, GameEventInfo info)
-    {
-        _roundLive = false;
-        Server.NextFrame(ClearTeamScores);
-
-        if (Players.IsWarmup() || _duels.Count == 0)
-        {
-            return HookResult.Continue;
-        }
-
-        var winners = new List<int?>();
-        var losers = new List<int?>();
-        int? lone = null;
-
-        foreach (var duel in _duels.OrderBy(duel => duel.Arena))
-        {
-            if (duel.Ct is not int ct)
-            {
-                lone = duel.T;
-                continue;
-            }
-
-            var winner = duel.Winner ?? TimeoutWinner(duel.T, ct);
-            var loser = winner == duel.T ? ct : duel.T;
-            winners.Add(winner);
-            losers.Add(loser);
-            AddWin(winner, loser);
-        }
-
-        var count = winners.Count;
-        var next = Enumerable.Range(0, count).Select(_ => new List<int>()).ToList();
-
-        for (var arena = 0; arena < count; arena++)
-        {
-            if (winners[arena] is int winner)
-            {
-                next[Math.Max(arena - 1, 0)].Add(winner);
-            }
-
-            if (losers[arena] is int loser)
-            {
-                next[Math.Min(arena + 1, count - 1)].Add(loser);
-            }
-        }
-
-        var ladder = next.SelectMany(pair => pair).Where(slot => PlayerAt(slot) != null && !_afk.Contains(slot)).ToList();
-
-        // The player who had no opponent takes the bottom loser's place, so
-        // they play next round and the bottom loser has the lone arena.
-        if (lone is int alone && PlayerAt(alone) != null && !_afk.Contains(alone))
-        {
-            ladder.Insert(Math.Max(ladder.Count - 1, 0), alone);
-
-            if (PlayerAt(alone) is { } player)
-            {
-                Chat.To(player, $"You had no opponent this round — arena {ChatColors.Gold}{ladder.IndexOf(alone) / 2 + 1}{ChatColors.Default} next.");
-            }
-        }
-
-        // Past the last arena, whoever waited plays next: as many bottom
-        // losers sit out in their place. The queue's front fills the ladder
-        // at prestart.
-        var waiting = _queue.Count(slot => PlayerAt(slot) != null && !_afk.Contains(slot));
-
-        if (waiting > 0)
-        {
-            var total = ladder.Count + waiting;
-            var playing = Math.Min(_arenas.Count * 2, total);
-            var sitOut = Math.Min(total - playing, waiting);
-            var leaving = ladder.Where(slot => losers.Contains(slot)).Reverse().Take(sitOut).ToList();
-
-            foreach (var slot in leaving)
-            {
-                ladder.Remove(slot);
-                _queue.Add(slot);
-
-                if (PlayerAt(slot) is { } player)
-                {
-                    Chat.To(player, "You sit out the next round so the waiting player can play.");
-                }
-            }
-        }
-
-        _ladder.Clear();
-        _ladder.AddRange(ladder);
-
-        for (var arena = 0; arena < count; arena++)
-        {
-            Tell(winners[arena], losers[arena], true);
-            Tell(losers[arena], winners[arena], false);
-        }
-
-        return HookResult.Continue;
-    }
-
-    // Out of time with both alive: the healthier player takes it, and a tie
-    // goes to whoever was higher on the ladder.
-    private int TimeoutWinner(int t, int ct)
-    {
-        var tHealth = Health(t);
-        var ctHealth = Health(ct);
-
-        if (tHealth != ctHealth)
-        {
-            return tHealth > ctHealth ? t : ct;
-        }
-
-        var tRank = _ladder.IndexOf(t);
-        var ctRank = _ladder.IndexOf(ct);
-
-        if (tRank < 0 || ctRank < 0)
-        {
-            return tRank < 0 ? ct : t;
-        }
-
-        return tRank < ctRank ? t : ct;
-    }
-
-    private static int Health(int slot)
-    {
-        var pawn = PlayerAt(slot)?.PlayerPawn.Value;
-        return pawn is { LifeState: (byte)LifeState_t.LIFE_ALIVE } ? pawn.Health : 0;
-    }
-
-    private void Tell(int? slot, int? opponent, bool won)
-    {
-        if (slot is not int value || PlayerAt(value) is not { } player)
-        {
-            return;
-        }
-
-        var index = _ladder.IndexOf(value);
-        var where = index >= 0
-            ? $"arena {ChatColors.Gold}{index / 2 + 1}{ChatColors.Default} next"
-            : "you're in the queue for the next round";
-        var score = "";
-
-        if (opponent is int other && PlayerAt(other) is { } them)
-        {
-            var (mine, theirs) = Score(value, other);
-            score = $" vs {them.PlayerName} ({mine}-{theirs})";
-        }
-
-        Chat.To(player, won ? $"{ChatColors.Green}You won{ChatColors.Default}{score} — {where}." : $"{ChatColors.LightRed}You lost{ChatColors.Default}{score} — {where}.");
+        var name = WebUtility.HtmlEncode(PlayerAt(other)?.PlayerName ?? "");
+        player.PrintToCenterHtml(
+            $"<font color='#f5a524'>ARENA {duel.Arena + 1}</font> · {Weapons.RoundName(duel.Round)}<br><font color='#5ee35e'>YOU {mine}</font> : <font color='#ff6b6b'>{theirs} {name}</font>",
+            2
+        );
     }
 
     private void OpenGuns(CCSPlayerController player)
@@ -775,7 +858,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
                 _preferences.Save();
 
                 var rifle = Weapons.Rifles.FirstOrDefault(entry => entry.Item == preferences.Rifle)?.Name ?? preferences.Rifle;
-                Chat.To(chooser, $"Saved: {ChatColors.Gold}{rifle}{ChatColors.Default} + {ChatColors.Gold}{pistol.Name}{ChatColors.Default}, from the next round.");
+                Chat.To(chooser, $"Saved: {ChatColors.Gold}{rifle}{ChatColors.Default} + {ChatColors.Gold}{pistol.Name}{ChatColors.Default}, from your next duel.");
             });
         }
 
@@ -819,9 +902,10 @@ public sealed class ServersDuelsPlugin : BasePlugin
         MenuManager.OpenChatMenu(player, menu);
     }
 
-    private void ShowQueue(CCSPlayerController player)
+    private void ShowStatus(CCSPlayerController player)
     {
         var slot = player.Slot;
+        var rating = (int)Math.Round(Rating(slot));
 
         if (_afk.Contains(slot))
         {
@@ -831,18 +915,11 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         if (_duelOf.TryGetValue(slot, out var duel))
         {
-            Chat.To(player, $"You're in arena {ChatColors.Gold}{duel.Arena + 1}{ChatColors.Default} of {Math.Max(_duels.Count, 1)}.");
+            Chat.To(player, $"You're in arena {ChatColors.Gold}{duel.Arena + 1}{ChatColors.Default} of {_arenas.Count} · rating {ChatColors.Gold}{rating}");
             return;
         }
 
-        var place = _queue.IndexOf(slot);
-
-        Chat.To(
-            player,
-            place >= 0
-                ? $"You're {ChatColors.Gold}#{place + 1}{ChatColors.Default} in the queue ({_queue.Count} waiting, {_arenas.Count} arenas)."
-                : "You'll get an arena at the start of the next round."
-        );
+        Chat.To(player, $"Finding your next opponent · rating {ChatColors.Gold}{rating}{ChatColors.Default} · {_free.Count} free, {_duels.Count} duels running.");
     }
 
     private void ToggleAfk(CCSPlayerController player) => SetAfk(player, !_afk.Contains(player.Slot));
@@ -854,20 +931,21 @@ public sealed class ServersDuelsPlugin : BasePlugin
         if (afk)
         {
             _afk.Add(slot);
-            _queue.Remove(slot);
-            Chat.To(player, $"You're AFK and out of the rotation. Type {ChatColors.Green}!afk{ChatColors.Default} to come back.");
+            _free.Remove(slot);
+            Forfeit(slot);
 
-            if (!_roundLive || !_duelOf.ContainsKey(slot))
+            if (player.Team != CsTeam.Spectator)
             {
-                _ladder.Remove(slot);
-                Place(slot, CsTeam.Spectator, "AFK");
+                player.ChangeTeam(CsTeam.Spectator);
             }
 
+            Tagged(player, "AFK");
+            Chat.To(player, $"You're AFK and out of the rotation. Type {ChatColors.Green}!afk{ChatColors.Default} to come back.");
             return;
         }
 
         _afk.Remove(slot);
-        Enqueue(slot);
-        Chat.To(player, "Welcome back — you'll get an arena at the start of the next round.");
+        MakeFree(slot);
+        Chat.To(player, "Welcome back — your next opponent is on the way.");
     }
 }
