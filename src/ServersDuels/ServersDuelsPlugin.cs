@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.2.2";
+    public override string ModuleVersion => "1.2.3";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
 
@@ -137,7 +137,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
             "mp_respawn_on_death_ct 0",
             "mp_join_grace_time 0",
             "mp_randomspawn 0",
-            "mp_respawn_immunitytime 0",
+            "mp_respawn_immunitytime -1",
             "mp_dm_bonus_length_max 0",
             "mp_dm_bonus_length_min 0",
             "mp_dm_time_between_bonus_max 9999",
@@ -150,6 +150,17 @@ public sealed class ServersDuelsPlugin : BasePlugin
     private HookResult OnSpawn(EventPlayerSpawn @event, GameEventInfo info)
     {
         var player = @event.Userid;
+
+        if (Players.IsHuman(player))
+        {
+            Server.NextFrame(() =>
+            {
+                if (player!.IsValid && player.PlayerPawn.Value is { IsValid: true } pawn)
+                {
+                    ClearImmunity(pawn);
+                }
+            });
+        }
 
         if (!_live || !Players.IsHuman(player) || _duelOf.ContainsKey(player!.Slot))
         {
@@ -495,6 +506,20 @@ public sealed class ServersDuelsPlugin : BasePlugin
     {
         pawn.Health = 100;
         Utilities.SetStateChanged(pawn, "CBaseEntity", "m_iHealth");
+        ClearImmunity(pawn);
+    }
+
+    // Deathmatch's spawn immunity (the INVULNERABLE box), should a spawn have
+    // granted it despite mp_respawn_immunitytime.
+    private static void ClearImmunity(CCSPlayerPawn pawn)
+    {
+        if (pawn.GunGameImmunity)
+        {
+            pawn.GunGameImmunity = false;
+            pawn.ImmuneToGunGameDamageTime = 0;
+            Utilities.SetStateChanged(pawn, "CCSPlayerPawn", "m_bGunGameImmunity");
+            Utilities.SetStateChanged(pawn, "CCSPlayerPawn", "m_fImmuneToGunGameDamageTime");
+        }
     }
 
     // Alone in an empty arena until someone comes free; in spectate only when
