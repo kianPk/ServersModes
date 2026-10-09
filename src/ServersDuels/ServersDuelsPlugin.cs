@@ -13,7 +13,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.0.7";
+    public override string ModuleVersion => "1.0.8";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "1v1 arenas on a ladder, and the Duels map rotation.";
 
@@ -41,6 +41,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
     private List<Arena> _arenas = new();
     private bool _arenasFound;
     private readonly ArenaSigns _signs = new();
+    private ArenaSounds _sounds = null!;
     private bool _signsLogged;
 
     // Ladder order: the two players of arena n are at 2n and 2n+1.
@@ -62,7 +63,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "duels", Maps, 4, MapEnd.Timed);
-        _ = new ArenaSounds(this, slot => _duelOf.TryGetValue(slot, out var duel) ? duel.Arena : null);
+        _sounds = new ArenaSounds(this, Logger, slot => _duelOf.TryGetValue(slot, out var duel) ? duel.Arena : null);
 
         words.Add(this, "guns", "Choose your rifle and pistol", (player, _) => OpenGuns(player));
         words.Add(this, "rounds", "Choose the round types you play", (player, _) => OpenRounds(player));
@@ -78,6 +79,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         RegisterEventHandler<EventPlayerDeath>(OnDeath);
         RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
         AddCommandListener("jointeam", OnJoinTeam);
+        AddTimer(1f, ShowScores, TimerFlags.REPEAT);
 
         if (hotReload)
         {
@@ -98,6 +100,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _duelOf.Clear();
         _roundLive = false;
         _scores.Clear();
+        _sounds.Reset();
 
         // A new map is a new ladder, but the order players had carries over.
         _queue.InsertRange(0, _ladder);
@@ -506,7 +509,47 @@ public sealed class ServersDuelsPlugin : BasePlugin
                 ? $"{ChatColors.Gold}Arena {duel.Arena + 1}{ChatColors.Default} · {round} · waiting for an opponent"
                 : $"{ChatColors.Gold}Arena {duel.Arena + 1}{ChatColors.Default} · {round} · vs {ChatColors.LightRed}{opponent}{ChatColors.Default} · {ChatColors.Green}{mine}{ChatColors.Default}-{ChatColors.LightRed}{theirs}"
         );
-        player.PrintToCenter(opponent == null ? $"Arena {duel.Arena + 1} | {round}" : $"Arena {duel.Arena + 1} | {round} | vs {opponent} | {mine}-{theirs}");
+    }
+
+    // The teams' score at the top is the same for everyone, so each duellist
+    // gets their own: arena, round and the score against their opponent, kept
+    // on screen until the next round's duels are drawn.
+    private void ShowScores()
+    {
+        if (Players.IsWarmup())
+        {
+            return;
+        }
+
+        foreach (var duel in _duels)
+        {
+            ShowScore(duel, duel.T);
+
+            if (duel.Ct is int ct)
+            {
+                ShowScore(duel, ct);
+            }
+        }
+    }
+
+    private void ShowScore(Duel duel, int slot)
+    {
+        if (PlayerAt(slot) is not { } player)
+        {
+            return;
+        }
+
+        var head = $"<font color='#f5a524'>ARENA {duel.Arena + 1}</font> · {Weapons.RoundName(duel.Round)}";
+
+        if (duel.Opponent(slot) is not int other || PlayerAt(other) is not { } opponent)
+        {
+            player.PrintToCenterHtml($"{head}<br>No opponent this round", 2);
+            return;
+        }
+
+        var (mine, theirs) = Score(slot, other);
+        var name = System.Net.WebUtility.HtmlEncode(opponent.PlayerName);
+        player.PrintToCenterHtml($"{head}<br><font color='#5ee35e'>YOU {mine}</font> : <font color='#ff6b6b'>{theirs} {name}</font>", 2);
     }
 
     private HookResult OnDeath(EventPlayerDeath @event, GameEventInfo info)

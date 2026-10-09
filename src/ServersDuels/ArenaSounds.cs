@@ -2,6 +2,7 @@ using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.UserMessages;
 using CounterStrikeSharp.API.Modules.Utils;
+using Microsoft.Extensions.Logging;
 
 namespace ServersModes.Duels;
 
@@ -14,13 +15,20 @@ public sealed class ArenaSounds
     private const string FireBullets = "CMsgTEFireBullets";
     private const string StartSound = "CMsgSosStartSoundEvent";
 
+    private readonly ILogger _logger;
     private readonly Func<int, int?> _arenaOf;
+    private readonly HashSet<string> _reported = new();
 
-    public ArenaSounds(BasePlugin plugin, Func<int, int?> arenaOf)
+    public ArenaSounds(BasePlugin plugin, ILogger logger, Func<int, int?> arenaOf)
     {
+        _logger = logger;
         _arenaOf = arenaOf;
-        plugin.HookUserMessage(IdOf(FireBullets, 452), OnFireBullets, HookMode.Pre);
-        plugin.HookUserMessage(IdOf(StartSound, 208), OnStartSound, HookMode.Pre);
+
+        var shots = IdOf(FireBullets, 452);
+        var sounds = IdOf(StartSound, 208);
+        plugin.HookUserMessage(shots, OnFireBullets, HookMode.Pre);
+        plugin.HookUserMessage(sounds, OnStartSound, HookMode.Pre);
+        _logger.LogInformation("Arena sounds: hooked {Shots} ({ShotsId}) and {Sounds} ({SoundsId})", FireBullets, shots, StartSound, sounds);
     }
 
     private static int IdOf(string name, int fallback)
@@ -38,11 +46,18 @@ public sealed class ArenaSounds
 
     private HookResult OnFireBullets(UserMessage message)
     {
-        var shooter = new CHandle<CCSPlayerPawn>(message.ReadUInt("player"));
-
-        if (shooter.IsValid)
+        try
         {
-            Keep(message, SlotOf(shooter.Value));
+            var shooter = new CHandle<CCSPlayerPawn>(message.ReadUInt("player"));
+
+            if (shooter.IsValid)
+            {
+                Keep(message, FireBullets, SlotOf(shooter.Value));
+            }
+        }
+        catch (Exception error)
+        {
+            Report($"{FireBullets} failed", error);
         }
 
         return HookResult.Continue;
@@ -50,30 +65,63 @@ public sealed class ArenaSounds
 
     private HookResult OnStartSound(UserMessage message)
     {
-        var index = message.ReadInt("source_entity_index");
-
-        if (index > 0)
+        try
         {
-            Keep(message, SlotOf(Utilities.GetEntityFromIndex<CBaseEntity>(index)));
+            var index = message.ReadInt("source_entity_index");
+
+            if (index > 0)
+            {
+                Keep(message, StartSound, SlotOf(Utilities.GetEntityFromIndex<CBaseEntity>(index)));
+            }
+        }
+        catch (Exception error)
+        {
+            Report($"{StartSound} failed", error);
         }
 
         return HookResult.Continue;
     }
 
-    private void Keep(UserMessage message, int? source)
+    private void Keep(UserMessage message, string kind, int? source)
     {
         if (source is not int slot || _arenaOf(slot) is not int arena)
         {
             return;
         }
 
-        var deaf = message.Recipients.Where(listener => _arenaOf(listener.Slot) is int theirs && theirs != arena).ToList();
+        // Recipients hands out a copy: the kept listeners go back as a new filter.
+        var recipients = message.Recipients.ToList();
+        var kept = recipients.Where(listener => listener is { IsValid: true } && (_arenaOf(listener.Slot) is not int theirs || theirs == arena)).ToArray();
 
-        foreach (var listener in deaf)
+        if (kept.Length == recipients.Count)
         {
-            message.Recipients.Remove(listener);
+            return;
+        }
+
+        message.Recipients = new RecipientFilter(kept);
+        Report($"{kind} filtered", null, $"{recipients.Count} -> {kept.Length} listeners, now {message.Recipients.Count}");
+    }
+
+    // Once per kind and map load, so the log shows the filter at work without
+    // a line per shot.
+    private void Report(string what, Exception? error, string detail = "")
+    {
+        if (!_reported.Add(what))
+        {
+            return;
+        }
+
+        if (error != null)
+        {
+            _logger.LogError(error, "Arena sounds: {What}", what);
+        }
+        else
+        {
+            _logger.LogInformation("Arena sounds: {What}: {Detail}", what, detail);
         }
     }
+
+    public void Reset() => _reported.Clear();
 
     // The slot of the player behind an entity: their pawn, or a weapon they hold.
     private static int? SlotOf(CBaseEntity? entity)
