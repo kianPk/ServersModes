@@ -13,7 +13,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.0.2";
+    public override string ModuleVersion => "1.0.3";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "1v1 arenas on a ladder, and the Duels map rotation.";
 
@@ -522,12 +522,28 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         var ladder = next.SelectMany(pair => pair).Where(slot => PlayerAt(slot) != null && !_afk.Contains(slot)).ToList();
 
-        // Someone is waiting and every arena is taken: the bottom loser makes
-        // room for them.
-        if (_queue.Count > 0 && ladder.Count >= _arenas.Count * 2)
+        // Whoever waited plays next: the bottom losers sit out in their place,
+        // as many as will not fit next round (the odd one out, or everyone past
+        // the last arena). The queue's front fills the ladder at prestart.
+        var waiting = _queue.Count(slot => PlayerAt(slot) != null && !_afk.Contains(slot));
+
+        if (waiting > 0)
         {
-            _queue.Add(ladder[^1]);
-            ladder.RemoveAt(ladder.Count - 1);
+            var total = ladder.Count + waiting;
+            var playing = Math.Min(_arenas.Count * 2, total - total % 2);
+            var sitOut = Math.Min(total - playing, waiting);
+            var leaving = ladder.Where(slot => losers.Contains(slot)).Reverse().Take(sitOut).ToList();
+
+            foreach (var slot in leaving)
+            {
+                ladder.Remove(slot);
+                _queue.Add(slot);
+
+                if (PlayerAt(slot) is { } player)
+                {
+                    Chat.To(player, "You sit out the next round so the waiting player can play.");
+                }
+            }
         }
 
         _ladder.Clear();
