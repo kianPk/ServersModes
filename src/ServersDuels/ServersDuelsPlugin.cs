@@ -13,7 +13,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.0.3";
+    public override string ModuleVersion => "1.0.4";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "1v1 arenas on a ladder, and the Duels map rotation.";
 
@@ -41,6 +41,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
     private List<Arena> _arenas = new();
     private bool _arenasFound;
     private readonly ArenaSigns _signs = new();
+    private bool _signsLogged;
 
     // Ladder order: the two players of arena n are at 2n and 2n+1.
     private readonly List<int> _ladder = new();
@@ -87,6 +88,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _arenas = new();
         _arenasFound = false;
         _signs.Clear();
+        _signsLogged = false;
         _duels = new();
         _duelOf.Clear();
         _roundLive = false;
@@ -309,7 +311,13 @@ public sealed class ServersDuelsPlugin : BasePlugin
         Server.NextFrame(() =>
         {
             EnsureArenas();
-            _signs.Place(_arenas);
+            var placed = _signs.Place(_arenas);
+
+            if (!_signsLogged)
+            {
+                _signsLogged = true;
+                Logger.LogInformation("{Map}: placed {Count} signs", Server.MapName, placed);
+            }
         });
 
         return HookResult.Continue;
