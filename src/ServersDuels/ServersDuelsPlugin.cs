@@ -13,7 +13,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.0.8";
+    public override string ModuleVersion => "1.0.9";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "1v1 arenas on a ladder, and the Duels map rotation.";
 
@@ -80,6 +80,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         RegisterEventHandler<EventRoundEnd>(OnRoundEnd);
         AddCommandListener("jointeam", OnJoinTeam);
         AddTimer(1f, ShowScores, TimerFlags.REPEAT);
+        IsolateArenas();
 
         if (hotReload)
         {
@@ -90,8 +91,13 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
     }
 
+    // Every arena's Ts (and CTs) are one team, and teammates' names show
+    // through walls and on the radar: as enemies, the next arena stays hidden.
+    private static void IsolateArenas() => Server.ExecuteCommand("mp_teammates_are_enemies 1");
+
     private void OnMapStart(string mapName)
     {
+        IsolateArenas();
         _arenas = new();
         _arenasFound = false;
         _signs.Clear();
@@ -230,6 +236,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _duelOf.Clear();
         _roundLive = false;
         ClearTeamScores();
+        IsolateArenas();
 
         if (Players.IsWarmup())
         {

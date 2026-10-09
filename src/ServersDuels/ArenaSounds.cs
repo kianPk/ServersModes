@@ -48,12 +48,11 @@ public sealed class ArenaSounds
     {
         try
         {
-            var shooter = new CHandle<CCSPlayerPawn>(message.ReadUInt("player"));
-
-            if (shooter.IsValid)
-            {
-                Keep(message, FireBullets, SlotOf(shooter.Value));
-            }
+            var raw = message.ReadUInt("player");
+            var shooter = new CHandle<CCSPlayerPawn>(raw);
+            var slot = shooter.IsValid ? SlotOf(shooter.Value) : null;
+            Report($"{FireBullets} seen", null, $"player={raw} index={shooter.Index} slot={slot?.ToString() ?? "none"} arena={(slot is int s ? _arenaOf(s)?.ToString() : null) ?? "none"} listeners={message.Recipients.Count}");
+            Keep(message, FireBullets, slot);
         }
         catch (Exception error)
         {
