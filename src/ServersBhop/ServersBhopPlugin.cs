@@ -1,6 +1,8 @@
 using System.Text.RegularExpressions;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
+using CounterStrikeSharp.API.Modules.Admin;
+using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Entities;
 using CounterStrikeSharp.API.Modules.Memory;
 using CounterStrikeSharp.API.Modules.Timers;
@@ -15,10 +17,11 @@ namespace ServersModes.Bhop;
 // maps mark them with named triggers (timer_startzone / timer_endzone, and
 // map_start / map_end or s1_start on older ports); leaving the start starts
 // the clock, touching the end stops it. Bonuses work the same way per number.
+// Maps without such triggers get box zones instead (see BoxStore).
 public sealed partial class ServersBhopPlugin : BasePlugin
 {
     public override string ModuleName => "Servers BHOP";
-    public override string ModuleVersion => "1.0.0";
+    public override string ModuleVersion => "1.1.0";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Bunny hop with a timer, records and the map rotation.";
 
@@ -57,6 +60,8 @@ public sealed partial class ServersBhopPlugin : BasePlugin
         public int Track;
         public float? Started;
         public bool InStart;
+        public bool InStartBox;
+        public bool InEndBox;
         public bool Practice;
         public Saved? Saved;
         public bool SmallHud;
@@ -64,15 +69,22 @@ public sealed partial class ServersBhopPlugin : BasePlugin
     }
 
     private RecordStore _records = null!;
+    private BoxStore _boxStore = null!;
     private SiteBanner _banner = null!;
     private readonly Dictionary<int, Run> _runs = new();
+    private readonly Dictionary<ZoneKind, Vector> _corners = new();
+    private MapBoxes? _boxes;
     private bool? _hasZones;
     private int _ticks;
+
+    private bool UsesBoxes => _boxes is { Complete: true };
 
     public override void Load(bool hotReload)
     {
         Chat.Tag = "BHOP";
         _records = new RecordStore(Path.Combine(ModuleDirectory, "records.json"));
+        _boxStore = new BoxStore(Path.Combine(ModuleDirectory, "zones.json"));
+        _boxes = _boxStore.For(Server.MapName);
 
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "bhop", Maps, 5, MapEnd.Timed);
@@ -103,12 +115,16 @@ public sealed partial class ServersBhopPlugin : BasePlugin
         words.Add(this, "hud_s", "Smaller timer", (player, _) => RunOf(player.Slot).SmallHud = true);
         words.Add(this, "hud_m", "Normal timer", (player, _) => RunOf(player.Slot).SmallHud = false);
 
+        AddCommand("css_zone", "Set this map's timer zones: css_zone start|end|clear [player]", OnZoneCommand);
+
         HookEntityOutput("trigger_multiple", "OnStartTouch", OnStartTouch);
         HookEntityOutput("trigger_multiple", "OnEndTouch", OnEndTouch);
 
-        RegisterListener<Listeners.OnMapStart>(_ =>
+        RegisterListener<Listeners.OnMapStart>(map =>
         {
             _runs.Clear();
+            _corners.Clear();
+            _boxes = _boxStore.For(map);
             _hasZones = null;
             ApplyRules();
         });
@@ -158,10 +174,10 @@ public sealed partial class ServersBhopPlugin : BasePlugin
         return run;
     }
 
-    [GeneratedRegex(@"^(?:timer_startzone|timer_start|map_start|s1_start|stage1_start|start_zone|zone_start)$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^(?:timer_startzone|trigger_startzone|timer_start|map_start|s1_start|stage1_start|start_zone|zone_start)$", RegexOptions.IgnoreCase)]
     private static partial Regex StartName();
 
-    [GeneratedRegex(@"^(?:timer_endzone|timer_end|map_end|end_zone|zone_end)$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^(?:timer_endzone|trigger_endzone|timer_end|map_end|end_zone|zone_end)$", RegexOptions.IgnoreCase)]
     private static partial Regex EndName();
 
     [GeneratedRegex(@"^(?:timer_bonus(\d+)_startzone|b(\d+)_start|bonus(\d+)_start)$", RegexOptions.IgnoreCase)]
@@ -206,6 +222,11 @@ public sealed partial class ServersBhopPlugin : BasePlugin
 
     private bool HasZones()
     {
+        if (UsesBoxes)
+        {
+            return true;
+        }
+
         if (_hasZones == null)
         {
             var zones = Zones().ToList();
@@ -213,6 +234,19 @@ public sealed partial class ServersBhopPlugin : BasePlugin
                         && zones.Any(entry => entry.Zone is { Kind: ZoneKind.End, Bonus: 0 });
             Logger.LogInformation("{Map}: {Count} timer zones ({Names})", Server.MapName, zones.Count,
                 string.Join(", ", zones.Select(entry => entry.Trigger.Entity?.Name)));
+
+            if (_hasZones == false)
+            {
+                // What the map does name its triggers, to tell a new naming
+                // scheme from a map that needs box zones.
+                var names = Utilities.FindAllEntitiesByDesignerName<CBaseEntity>("trigger_multiple")
+                    .Select(trigger => trigger.Entity?.Name)
+                    .Where(triggerName => !string.IsNullOrEmpty(triggerName))
+                    .Distinct()
+                    .Take(40);
+                Logger.LogInformation("{Map}: no timer zones; trigger_multiple names: {Names}", Server.MapName,
+                    string.Join(", ", names));
+            }
         }
 
         return _hasZones.Value;
@@ -231,16 +265,31 @@ public sealed partial class ServersBhopPlugin : BasePlugin
 
     private HookResult OnStartTouch(CEntityIOOutput output, string name, CEntityInstance activator, CEntityInstance caller, CVariant value, float delay)
     {
-        if (ZoneOf(caller.Entity?.Name) is not { } zone || PlayerOf(activator) is not { } player)
+        if (!UsesBoxes && ZoneOf(caller.Entity?.Name) is { } zone && PlayerOf(activator) is { } player)
         {
-            return HookResult.Continue;
+            Entered(player, zone);
         }
 
+        return HookResult.Continue;
+    }
+
+    private HookResult OnEndTouch(CEntityIOOutput output, string name, CEntityInstance activator, CEntityInstance caller, CVariant value, float delay)
+    {
+        if (!UsesBoxes && ZoneOf(caller.Entity?.Name) is { Kind: ZoneKind.Start } zone && PlayerOf(activator) is { } player)
+        {
+            LeftStart(player, zone.Bonus);
+        }
+
+        return HookResult.Continue;
+    }
+
+    private void Entered(CCSPlayerController player, Zone zone)
+    {
         var run = RunOf(player.Slot);
 
         if (run.Practice)
         {
-            return HookResult.Continue;
+            return;
         }
 
         if (zone.Kind == ZoneKind.Start)
@@ -253,22 +302,15 @@ public sealed partial class ServersBhopPlugin : BasePlugin
         {
             Finished(player, run, Server.CurrentTime - started);
         }
-
-        return HookResult.Continue;
     }
 
-    private HookResult OnEndTouch(CEntityIOOutput output, string name, CEntityInstance activator, CEntityInstance caller, CVariant value, float delay)
+    private void LeftStart(CCSPlayerController player, int bonus)
     {
-        if (ZoneOf(caller.Entity?.Name) is not { Kind: ZoneKind.Start } zone || PlayerOf(activator) is not { } player)
-        {
-            return HookResult.Continue;
-        }
-
         var run = RunOf(player.Slot);
 
-        if (run.Practice || run.Track != zone.Bonus)
+        if (run.Practice || run.Track != bonus)
         {
-            return HookResult.Continue;
+            return;
         }
 
         run.InStart = false;
@@ -279,7 +321,48 @@ public sealed partial class ServersBhopPlugin : BasePlugin
         }
 
         run.Started = Server.CurrentTime;
-        return HookResult.Continue;
+    }
+
+    // Box zones have no touch outputs, so crossing one is watched every tick.
+    private void TrackBoxes(List<CCSPlayerController> players)
+    {
+        var boxes = _boxes!;
+
+        foreach (var player in players)
+        {
+            if (AlivePawn(player) is not { AbsOrigin: { } origin })
+            {
+                continue;
+            }
+
+            var run = RunOf(player.Slot);
+            var inStart = boxes.Start!.Contains(origin);
+            var inEnd = boxes.End!.Contains(origin);
+
+            if (inStart != run.InStartBox)
+            {
+                run.InStartBox = inStart;
+
+                if (inStart)
+                {
+                    Entered(player, new Zone(ZoneKind.Start, 0));
+                }
+                else
+                {
+                    LeftStart(player, 0);
+                }
+            }
+
+            if (inEnd != run.InEndBox)
+            {
+                run.InEndBox = inEnd;
+
+                if (inEnd)
+                {
+                    Entered(player, new Zone(ZoneKind.End, 0));
+                }
+            }
+        }
     }
 
     private static void CapStartSpeed(CCSPlayerPawn pawn)
@@ -324,7 +407,9 @@ public sealed partial class ServersBhopPlugin : BasePlugin
 
     private void OnTick()
     {
-        if (++_ticks % HudEveryTicks != 0)
+        var hud = ++_ticks % HudEveryTicks == 0;
+
+        if (!hud && !UsesBoxes)
         {
             return;
         }
@@ -334,6 +419,16 @@ public sealed partial class ServersBhopPlugin : BasePlugin
         // Nobody joins before the map's entities exist, so the zones are
         // looked up only once someone is here to see them.
         if (players.Count == 0)
+        {
+            return;
+        }
+
+        if (UsesBoxes)
+        {
+            TrackBoxes(players);
+        }
+
+        if (!hud)
         {
             return;
         }
@@ -467,9 +562,15 @@ public sealed partial class ServersBhopPlugin : BasePlugin
 
         LeavePractice(pawn, RunOf(player.Slot));
 
-        if (SpawnSpot() is { } spot)
+        var spot = SpawnSpot();
+
+        if (UsesBoxes)
         {
-            pawn.Teleport(spot.Origin, spot.Angles, new Vector(0, 0, 0));
+            pawn.Teleport(_boxes!.Spawn(), spot?.Angles, new Vector(0, 0, 0));
+        }
+        else if (spot is { } found)
+        {
+            pawn.Teleport(found.Origin, found.Angles, new Vector(0, 0, 0));
         }
 
         var run = RunOf(player.Slot);
@@ -601,6 +702,93 @@ public sealed partial class ServersBhopPlugin : BasePlugin
             : $"{ChatColors.Gold}{map}{ChatColors.Default} has no timer zones, so times are not recorded here.");
         ShowRecord(player, 0);
         ShowPersonalBest(player);
+    }
+
+    // Run twice per zone from opposite corners of it, standing on the floor.
+    // Root admins use it in chat; over rcon it takes the player to measure
+    // from, or the only one on the server.
+    private void OnZoneCommand(CCSPlayerController? caller, CommandInfo info)
+    {
+        if (caller != null && !AdminManager.PlayerHasPermissions(caller, "@css/root"))
+        {
+            info.ReplyToCommand("Only admins can set timer zones.");
+            return;
+        }
+
+        var map = Server.MapName;
+        var action = info.ArgCount > 1 ? info.GetArg(1).ToLowerInvariant() : "";
+
+        if (action == "clear")
+        {
+            _boxStore.Clear(map);
+            ReloadBoxes(map);
+            info.ReplyToCommand($"{map}: box zones cleared, the map's own triggers are used.");
+            return;
+        }
+
+        if (action is not ("start" or "end"))
+        {
+            var state = UsesBoxes ? "box zones" : HasZones() ? "trigger zones" : "no zones";
+            info.ReplyToCommand($"{map}: {state}. Usage: css_zone start|end|clear [player]");
+            return;
+        }
+
+        var who = caller ?? Measurer(info.ArgCount > 2 ? info.GetArg(2) : null);
+
+        if (who == null || AlivePawn(who) is not { AbsOrigin: { } origin })
+        {
+            info.ReplyToCommand("Name a living player to measure from: css_zone start|end <player>");
+            return;
+        }
+
+        var kind = action == "start" ? ZoneKind.Start : ZoneKind.End;
+        var corner = new Vector(origin.X, origin.Y, origin.Z);
+
+        if (!_corners.Remove(kind, out var first))
+        {
+            _corners[kind] = corner;
+            info.ReplyToCommand($"{map}: first corner of the {action} zone set. Stand in the opposite corner and run it again.");
+            return;
+        }
+
+        var box = Box.Of(first.X, first.Y, first.Z, corner.X, corner.Y, corner.Z);
+
+        if (kind == ZoneKind.Start)
+        {
+            _boxStore.SetStart(map, box);
+        }
+        else
+        {
+            _boxStore.SetEnd(map, box);
+        }
+
+        ReloadBoxes(map);
+        info.ReplyToCommand(UsesBoxes
+            ? $"{map}: {action} zone saved, the timer now runs on box zones."
+            : $"{map}: {action} zone saved; set the {(kind == ZoneKind.Start ? "end" : "start")} zone too.");
+    }
+
+    private static CCSPlayerController? Measurer(string? name)
+    {
+        var humans = Players.Humans().ToList();
+
+        return string.IsNullOrWhiteSpace(name)
+            ? humans.Count == 1 ? humans[0] : null
+            : humans.FirstOrDefault(player => player.PlayerName.Contains(name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void ReloadBoxes(string map)
+    {
+        _boxes = _boxStore.For(map);
+        _hasZones = null;
+
+        foreach (var run in _runs.Values)
+        {
+            run.Started = null;
+            run.InStart = false;
+            run.InStartBox = false;
+            run.InEndBox = false;
+        }
     }
 
     private static void SetMoveType(CCSPlayerPawn pawn, MoveType_t moveType)
