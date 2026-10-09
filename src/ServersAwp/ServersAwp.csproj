@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>ServersModes.Awp</RootNamespace>
+    <AssemblyName>ServersAwp</AssemblyName>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>ServersModes.Wingman</RootNamespace>
+    <AssemblyName>Servers2x2</AssemblyName>
+  </PropertyGroup>
+</Project>
