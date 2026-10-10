@@ -14,12 +14,15 @@ namespace ServersModes.Dm;
 // The game respawns everyone: a bot a plugin respawns comes back with its AI
 // asleep and just stands there. Players who picked a shorter delay than the
 // game's are brought back sooner by this plugin.
-// Expert bots keep the server full, and each player who joins takes a bot's
-// place (bot_quota_mode fill).
+// Bots keep the server full, and each player who joins takes a bot's place
+// (bot_quota_mode fill). They run the plugin's own behaviour tree (csgo/scripts/
+// ai/servers_dm): the game's deathmatch one stalls them forever on a purchase
+// when buying is off, so they get a rifle here instead, and its skill profiles
+// are all the game's strongest.
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.4.0";
+    public override string ModuleVersion => "1.5.0";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
 
@@ -43,6 +46,14 @@ public sealed class ServersDmPlugin : BasePlugin
 
     // Players plus bots; every player who joins replaces one bot.
     private const int BotQuota = 10;
+
+    private const string BotTree = "scripts/ai/servers_dm/bt_default.kv3";
+
+    // Without the plugin's tree on disk the game's stays: a missing tree would
+    // leave bots with no AI at all.
+    private static bool _hasBotTree;
+
+    private static readonly string[] BotRifles = ["weapon_ak47", "weapon_m4a1", "weapon_m4a1_silencer", "weapon_ak47", "weapon_awp"];
 
     private LoadoutStore _loadouts = null!;
     private readonly Dictionary<int, float> _deadSince = new();
@@ -99,6 +110,19 @@ public sealed class ServersDmPlugin : BasePlugin
         RegisterEventHandler<EventPlayerDisconnect>(OnDisconnect);
         RegisterListener<Listeners.OnEntityTakeDamagePre>(OnTakeDamage);
         AddTimer(0.5f, RespawnDue, TimerFlags.REPEAT);
+
+        var csgo = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "..", ".."));
+        _hasBotTree = File.Exists(Path.Combine(csgo, BotTree));
+
+        if (_hasBotTree)
+        {
+            Logger.LogInformation("Bots use {Tree}", BotTree);
+        }
+        else
+        {
+            Logger.LogWarning("{Tree} is not in {Csgo}: bots keep the game's tree and stall when they try to buy", BotTree, csgo);
+        }
+
         ApplyRules();
     }
 
@@ -137,6 +161,7 @@ public sealed class ServersDmPlugin : BasePlugin
             "bot_chatter off",
             "mp_autokick 0",
             "sv_hibernate_when_empty 0",
+            _hasBotTree ? $"mp_bot_ai_bt \"{BotTree}\"" : "",
         }));
 
     private static float DelayOf(RespawnSpeed speed) =>
@@ -160,8 +185,12 @@ public sealed class ServersDmPlugin : BasePlugin
     {
         var player = @event.Userid;
 
-        // Bots keep what the game spawned them with: taking a bot's weapons
-        // away and handing it new ones can leave it standing still.
+        if (player is { IsValid: true, IsBot: true })
+        {
+            AddTimer(0.1f, () => ArmBot(player), TimerFlags.STOP_ON_MAPCHANGE);
+            return HookResult.Continue;
+        }
+
         if (!Players.IsHuman(player))
         {
             return HookResult.Continue;
@@ -170,6 +199,25 @@ public sealed class ServersDmPlugin : BasePlugin
         _deadSince.Remove(player!.Slot);
         AddTimer(0.1f, () => Equip(player), TimerFlags.STOP_ON_MAPCHANGE);
         return HookResult.Continue;
+    }
+
+    // The game spawns a deathmatch bot with a pistol only. It keeps that and
+    // gets a rifle on top; nothing is taken away from it.
+    private static void ArmBot(CCSPlayerController bot)
+    {
+        if (!bot.IsValid || bot.PlayerPawn.Value is not { LifeState: (byte)LifeState_t.LIFE_ALIVE } pawn || pawn.WeaponServices is not { } weapons)
+        {
+            return;
+        }
+
+        var hasRifle = weapons.MyWeapons.Any(handle =>
+            handle.Value is { IsValid: true, VData: { } data }
+            && new CCSWeaponBaseVData(data.Handle).GearSlot == gear_slot_t.GEAR_SLOT_RIFLE);
+
+        if (!hasRifle)
+        {
+            bot.GiveNamedItem(BotRifles[Random.Shared.Next(BotRifles.Length)]);
+        }
     }
 
     private void Equip(CCSPlayerController player)
