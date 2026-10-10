@@ -8,8 +8,9 @@ using ServersModes.Shared;
 
 namespace ServersModes.Dm;
 
-// What a player hears and sees for their own hits and kills: a ding on every
-// headshot that does not kill, a kill sound (a heavier one for a headshot),
+// What a player hears and sees for their own hits and kills: a short ding on
+// every headshot and a light tick on every body shot that does not kill, a
+// kill sound (a heavier one for a headshot),
 // and the announcer for kills in quick succession and for kill streaks.
 // The announcer's voice lines come from a workshop addon that
 // MultiAddonManager makes every client download; without it they are silent
@@ -21,7 +22,8 @@ public sealed class KillFeedback
 
     private const float MultiKillWindow = 4f;
 
-    private const string HeadshotHitSound = "sounds/training/bell_normal.vsnd_c";
+    private const string HeadshotHitSound = "sounds/buttons/bell1.vsnd_c";
+    private const string BodyHitSound = "sounds/buttons/blip1.vsnd_c";
     private const string KillSound = "sounds/ui/armsrace_kill_01.vsnd_c";
     private const string HeadshotKillSound = "sounds/buttons/bell1.vsnd_c";
 
@@ -138,9 +140,9 @@ public sealed class KillFeedback
     {
         var attacker = @event.Attacker;
 
-        if (@event.Health > 0 && @event.Hitgroup == HitgroupHead && Players.IsHuman(attacker) && attacker != @event.Userid)
+        if (@event.Health > 0 && Players.IsHuman(attacker) && attacker != @event.Userid)
         {
-            PlayFile(attacker!, HeadshotHitSound);
+            PlayFile(attacker!, @event.Hitgroup == HitgroupHead ? HeadshotHitSound : BodyHitSound);
         }
 
         return HookResult.Continue;

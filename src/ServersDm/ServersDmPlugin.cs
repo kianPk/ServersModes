@@ -22,7 +22,7 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.5.1";
+    public override string ModuleVersion => "1.6.0";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
 
@@ -57,6 +57,13 @@ public sealed class ServersDmPlugin : BasePlugin
 
     private LoadoutStore _loadouts = null!;
     private readonly Dictionary<int, float> _deadSince = new();
+
+    // Buying is open everywhere and the wallet never runs dry.
+    private const int Money = 16000;
+
+    // A fresh spawn takes no damage this long, or until it fires.
+    private const float SpawnProtection = 1.5f;
+    private readonly Dictionary<int, float> _protectedUntil = new();
 
     public override void Load(bool hotReload)
     {
@@ -105,6 +112,16 @@ public sealed class ServersDmPlugin : BasePlugin
             return HookResult.Continue;
         });
         RegisterEventHandler<EventPlayerSpawn>(OnSpawn);
+        RegisterEventHandler<EventItemPurchase>(OnPurchase);
+        RegisterEventHandler<EventWeaponFire>((@event, _) =>
+        {
+            if (@event.Userid is { IsValid: true } shooter)
+            {
+                _protectedUntil.Remove(shooter.Slot);
+            }
+
+            return HookResult.Continue;
+        });
         RegisterEventHandler<EventPlayerDeath>(OnDeath);
         RegisterEventHandler<EventPlayerConnectFull>(OnConnect);
         RegisterEventHandler<EventPlayerDisconnect>(OnDisconnect);
@@ -140,9 +157,15 @@ public sealed class ServersDmPlugin : BasePlugin
             "mp_respawn_on_death_ct 1",
             "mp_randomspawn 1",
             "mp_randomspawn_los 1",
-            "mp_respawn_immunitytime 1",
-            "mp_buytime 0",
-            "mp_buy_anywhere 0",
+            // The game's immunity puts an INVULNERABILITY box on screen; the
+            // plugin protects a fresh spawn silently instead.
+            "mp_respawn_immunitytime 0",
+            "mp_buy_during_immunity 0",
+            "mp_buytime 99999",
+            "mp_buy_anywhere 1",
+            $"mp_startmoney {Money}",
+            $"mp_maxmoney {Money}",
+            $"mp_afterroundmoney {Money}",
             "mp_dm_bonus_length_max 0",
             "mp_dm_bonus_length_min 0",
             "mp_dm_time_between_bonus_max 9999",
@@ -188,6 +211,11 @@ public sealed class ServersDmPlugin : BasePlugin
     {
         var player = @event.Userid;
 
+        if (player is { IsValid: true })
+        {
+            _protectedUntil[player.Slot] = Server.CurrentTime + SpawnProtection;
+        }
+
         if (player is { IsValid: true, IsBot: true })
         {
             AddTimer(0.1f, () => ArmBot(player), TimerFlags.STOP_ON_MAPCHANGE);
@@ -201,6 +229,46 @@ public sealed class ServersDmPlugin : BasePlugin
 
         _deadSince.Remove(player!.Slot);
         AddTimer(0.1f, () => Equip(player), TimerFlags.STOP_ON_MAPCHANGE);
+        FillWallet(player);
+        return HookResult.Continue;
+    }
+
+    private static void FillWallet(CCSPlayerController player)
+    {
+        if (!player.IsValid || player.InGameMoneyServices is not { } money || money.Account == Money)
+        {
+            return;
+        }
+
+        money.Account = Money;
+        Utilities.SetStateChanged(player, "CCSPlayerController", "m_pInGameMoneyServices");
+    }
+
+    // What a player buys is what they spawn with from then on, like a !guns pick.
+    private HookResult OnPurchase(EventItemPurchase @event, GameEventInfo info)
+    {
+        var player = @event.Userid;
+
+        if (!Players.IsHuman(player))
+        {
+            return HookResult.Continue;
+        }
+
+        var item = @event.Weapon.StartsWith("weapon_") ? @event.Weapon : $"weapon_{@event.Weapon}";
+        var loadout = _loadouts.For(player!.SteamID);
+
+        if (Weapons.Primaries.Any(weapon => weapon.Item == item))
+        {
+            loadout.Primary = item;
+            _loadouts.Save();
+        }
+        else if (Weapons.Secondaries.Any(weapon => weapon.Item == item))
+        {
+            loadout.Secondary = item;
+            _loadouts.Save();
+        }
+
+        Server.NextFrame(() => FillWallet(player));
         return HookResult.Continue;
     }
 
@@ -339,7 +407,7 @@ public sealed class ServersDmPlugin : BasePlugin
                 return;
             }
 
-            Chat.To(player, $"Welcome to {ChatColors.Gold}Deathmatch{ChatColors.Default}: health, armour and ammo back on every kill.");
+            Chat.To(player, $"Welcome to {ChatColors.Gold}Deathmatch{ChatColors.Default}: health, armour and ammo back on every kill. Buy anything, anywhere: what you buy is what you spawn with.");
             Chat.To(player, $"{ChatColors.Green}!guns{ChatColors.Default} weapons · {ChatColors.Green}!fast !medium !slow{ChatColors.Default} respawn · {ChatColors.Green}!hs{ChatColors.Default} headshots only · {ChatColors.Green}!sounds{ChatColors.Default} kill sounds · {ChatColors.Green}!rtv !nominate !timeleft");
         }, TimerFlags.STOP_ON_MAPCHANGE);
 
@@ -428,6 +496,14 @@ public sealed class ServersDmPlugin : BasePlugin
 
     private HookResult OnTakeDamage(CBaseEntity entity, CTakeDamageInfo info)
     {
+        if (entity.DesignerName == "player"
+            && new CCSPlayerPawn(entity.Handle).OriginalController.Value is { IsValid: true } victim
+            && _protectedUntil.TryGetValue(victim.Slot, out var until)
+            && Server.CurrentTime < until)
+        {
+            return HookResult.Handled;
+        }
+
         if (info.Attacker.Value is not { IsValid: true } attackerEntity || attackerEntity.DesignerName != "player")
         {
             return HookResult.Continue;
