@@ -22,10 +22,13 @@ public enum MapEnd
 
     // A match ends the map; the vote runs at match point.
     Match,
+
+    // The map never ends and players have no vote: only an admin changes it.
+    Manual,
 }
 
 // The map rotation and its vote: an end-of-map vote, !rtv, !nominate,
-// !timeleft and !nextmap. Maps change through changelevel/host_workshop_map,
+// !timeleft and !nextmap, none of which a Manual mode has. Maps change through changelevel/host_workshop_map,
 // so the cfg leaves the end of the match to this (mp_match_end_restart 1,
 // mp_match_end_changelevel 0, mp_endmatch_votenextmap 0).
 //
@@ -67,10 +70,14 @@ public sealed class MapVote
         _mapsToShow = mapsToShow;
         _end = end;
 
-        words.Add(plugin, "rtv", "Vote to change the map", (player, _) => RockTheVote(player));
-        words.Add(plugin, "nominate", "Nominate a map for the vote", Nominate);
-        words.Add(plugin, "timeleft", "Time left on this map", (player, _) => TimeLeft(player));
-        words.Add(plugin, "nextmap", "Show the next map", (player, _) => Chat.To(player, NextMapText()));
+        if (end != MapEnd.Manual)
+        {
+            words.Add(plugin, "rtv", "Vote to change the map", (player, _) => RockTheVote(player));
+            words.Add(plugin, "nominate", "Nominate a map for the vote", Nominate);
+            words.Add(plugin, "timeleft", "Time left on this map", (player, _) => TimeLeft(player));
+            words.Add(plugin, "nextmap", "Show the next map", (player, _) => Chat.To(player, NextMapText()));
+        }
+
         plugin.AddCommand("css_servers_map", "Change to a map now: <workshop id or map name>", OnChangeMapCommand);
 
         plugin.RegisterListener<Listeners.OnMapStart>(OnMapStart);
@@ -205,6 +212,11 @@ public sealed class MapVote
         if (_next != null)
         {
             ChangeAfter(8f);
+        }
+        else if (_end == MapEnd.Manual)
+        {
+            // mp_match_end_restart starts the same map over.
+            return HookResult.Continue;
         }
         else if (!_voting)
         {

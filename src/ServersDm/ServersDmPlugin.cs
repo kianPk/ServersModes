@@ -10,8 +10,9 @@ namespace ServersModes.Dm;
 
 // Free-for-all deathmatch the way xplay runs it: the weapons each player picked
 // with !guns on every spawn, health, armour and a full magazine back on every
-// kill, the game's line-of-sight spawns, and straight back in after a death
-// instead of watching the killer.
+// kill, a Medi-Shot for every few kills without dying, the game's line-of-sight
+// spawns, and straight back in after a death instead of watching the killer.
+// The map stays until an admin changes it from the site.
 // The game respawns bots: a bot a plugin respawns comes back with its AI
 // asleep and just stands there. Players are brought back by this plugin.
 // Bots keep the server full, and each player who joins takes a bot's place
@@ -22,7 +23,7 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.7.0";
+    public override string ModuleVersion => "1.8.0";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
 
@@ -68,15 +69,21 @@ public sealed class ServersDmPlugin : BasePlugin
     private const float SpawnProtection = 1.5f;
     private readonly Dictionary<int, float> _protectedUntil = new();
 
+    // Every this many kills without dying earns a Medi-Shot.
+    private const int HealthshotStreak = 3;
+    private readonly Dictionary<int, int> _streaks = new();
+    private readonly Dictionary<int, float> _healthshotGiven = new();
+
     public override void Load(bool hotReload)
     {
         Chat.Tag = "DM";
         _loadouts = new LoadoutStore(Path.Combine(ModuleDirectory, "loadouts.json"));
 
         var words = new ChatWords(this);
-        _ = new MapVote(this, words, "dm", Maps, 5, MapEnd.Timed);
+        _ = new MapVote(this, words, "dm", Maps, 5, MapEnd.Manual);
         _ = new SiteBanner(this);
-        NoHealthshot.Register(this);
+        NoHealthshot.Register(this, player =>
+            _healthshotGiven.TryGetValue(player.Slot, out var given) && Server.CurrentTime - given < 1f);
         _ = new KillFeedback(this, player => _loadouts.For(player.SteamID).KillSounds);
         _ = new BotWatch(this);
 
@@ -91,6 +98,7 @@ public sealed class ServersDmPlugin : BasePlugin
         RegisterListener<Listeners.OnMapStart>(_ =>
         {
             _deadSince.Clear();
+            _streaks.Clear();
             ApplyRules();
         });
         // Bots that sat through a hibernation wake up frozen, so the server
@@ -150,6 +158,9 @@ public sealed class ServersDmPlugin : BasePlugin
         {
             "mp_teammates_are_enemies 1",
             "mp_ignore_round_win_conditions 1",
+            // The map stays until an admin changes it.
+            "mp_timelimit 0",
+            "mp_roundtime 60",
             "mp_respawn_on_death_t 1",
             "mp_respawn_on_death_ct 1",
             "mp_randomspawn 1",
@@ -302,6 +313,11 @@ public sealed class ServersDmPlugin : BasePlugin
         var victim = @event.Userid;
         var attacker = @event.Attacker;
 
+        if (victim is { IsValid: true })
+        {
+            _streaks.Remove(victim.Slot);
+        }
+
         if (Players.IsHuman(victim))
         {
             _deadSince[victim!.Slot] = Server.CurrentTime;
@@ -313,7 +329,30 @@ public sealed class ServersDmPlugin : BasePlugin
             Server.NextFrame(() => Reward(attacker!));
         }
 
+        if (Players.IsHuman(attacker) && attacker != victim)
+        {
+            var streak = _streaks.GetValueOrDefault(attacker!.Slot) + 1;
+            _streaks[attacker.Slot] = streak;
+
+            if (streak % HealthshotStreak == 0)
+            {
+                Server.NextFrame(() => GiveHealthshot(attacker, streak));
+            }
+        }
+
         return HookResult.Continue;
+    }
+
+    private void GiveHealthshot(CCSPlayerController player, int streak)
+    {
+        if (!player.IsValid || !IsAlive(player))
+        {
+            return;
+        }
+
+        _healthshotGiven[player.Slot] = Server.CurrentTime;
+        player.GiveNamedItem(NoHealthshot.Healthshot);
+        Chat.To(player, $"{ChatColors.Gold}{streak}{ChatColors.Default} kills without dying: here is a {ChatColors.Green}Medi-Shot{ChatColors.Default}.");
     }
 
     // Health, armour and every magazine back, so the next fight starts even.
@@ -405,8 +444,8 @@ public sealed class ServersDmPlugin : BasePlugin
                 return;
             }
 
-            Chat.To(player, $"Welcome to {ChatColors.Gold}Deathmatch{ChatColors.Default}: health, armour and ammo back on every kill. Buy anything, anywhere: what you buy is what you spawn with.");
-            Chat.To(player, $"{ChatColors.Green}!guns{ChatColors.Default} weapons · {ChatColors.Green}!hs{ChatColors.Default} headshots only · {ChatColors.Green}!sounds{ChatColors.Default} kill sounds · {ChatColors.Green}!rtv !nominate !timeleft");
+            Chat.To(player, $"Welcome to {ChatColors.Gold}Deathmatch{ChatColors.Default}: health, armour and ammo back on every kill, a Medi-Shot for every {HealthshotStreak} kills without dying. Buy anything, anywhere: what you buy is what you spawn with.");
+            Chat.To(player, $"{ChatColors.Green}!guns{ChatColors.Default} weapons · {ChatColors.Green}!hs{ChatColors.Default} headshots only · {ChatColors.Green}!sounds{ChatColors.Default} kill sounds");
         }, TimerFlags.STOP_ON_MAPCHANGE);
 
         return HookResult.Continue;
@@ -417,6 +456,7 @@ public sealed class ServersDmPlugin : BasePlugin
         if (@event.Userid is { IsValid: true } player)
         {
             _deadSince.Remove(player.Slot);
+            _streaks.Remove(player.Slot);
         }
 
         return HookResult.Continue;

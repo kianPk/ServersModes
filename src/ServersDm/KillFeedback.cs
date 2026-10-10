@@ -20,7 +20,7 @@ public sealed class KillFeedback
     public const string AnnouncerAddon = "3461824328";
     private const string AnnouncerSoundEvents = "soundevents/soundevents_quakesounds.vsndevts";
 
-    private const float MultiKillWindow = 4f;
+    private const float MultiKillWindow = 8f;
 
     // The game's sounds closest to xplay's: a short tick around 4.6 kHz on the
     // body and a small bell at the same pitch on the head.
