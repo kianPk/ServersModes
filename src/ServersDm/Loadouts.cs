@@ -43,18 +43,10 @@ public static class Weapons
         Primaries.Concat(Secondaries).FirstOrDefault(weapon => weapon.Item == item)?.Name ?? item;
 }
 
-public enum RespawnSpeed
-{
-    Fast,
-    Medium,
-    Slow,
-}
-
 public sealed class Loadout
 {
     public string Primary { get; set; } = "weapon_ak47";
     public string Secondary { get; set; } = "weapon_deagle";
-    public RespawnSpeed Respawn { get; set; } = RespawnSpeed.Medium;
     public bool HeadshotsOnly { get; set; }
     public bool KillSounds { get; set; } = true;
 }

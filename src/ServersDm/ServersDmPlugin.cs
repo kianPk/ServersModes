@@ -10,10 +10,10 @@ namespace ServersModes.Dm;
 
 // Free-for-all deathmatch the way xplay runs it: the weapons each player picked
 // with !guns on every spawn, health, armour and a full magazine back on every
-// kill, the game's line-of-sight spawns, and a respawn delay each player picks.
-// The game respawns everyone: a bot a plugin respawns comes back with its AI
-// asleep and just stands there. Players who picked a shorter delay than the
-// game's are brought back sooner by this plugin.
+// kill, the game's line-of-sight spawns, and straight back in after a death
+// instead of watching the killer.
+// The game respawns bots: a bot a plugin respawns comes back with its AI
+// asleep and just stands there. Players are brought back by this plugin.
 // Bots keep the server full, and each player who joins takes a bot's place
 // (bot_quota_mode fill). They run the plugin's own behaviour tree (csgo/scripts/
 // ai/servers_dm): the game's deathmatch one stalls them forever on a purchase
@@ -22,7 +22,7 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.6.0";
+    public override string ModuleVersion => "1.7.0";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
 
@@ -40,6 +40,9 @@ public sealed class ServersDmPlugin : BasePlugin
         new("Vertigo", "de_vertigo"),
         new("Nuke", "de_nuke"),
     ];
+
+    // Long enough for the death to finish, too short to see the killer.
+    private const float RespawnDelay = 0.1f;
 
     // A respawn that has not happened this long after it was due gets another try.
     private const float RespawnRetry = 2f;
@@ -82,12 +85,6 @@ public sealed class ServersDmPlugin : BasePlugin
         words.Add(this, "m4", "Play with the M4A4", (player, _) => PickPrimary(player, "weapon_m4a1"));
         words.Add(this, "m4s", "Play with the M4A1-S", (player, _) => PickPrimary(player, "weapon_m4a1_silencer"));
         words.Add(this, "awp", "Play with the AWP", (player, _) => PickPrimary(player, "weapon_awp"));
-        words.Add(this, "fast", "Short respawn time", (player, _) => PickRespawn(player, RespawnSpeed.Fast));
-        words.Add(this, "f", "Short respawn time", (player, _) => PickRespawn(player, RespawnSpeed.Fast));
-        words.Add(this, "medium", "Medium respawn time", (player, _) => PickRespawn(player, RespawnSpeed.Medium));
-        words.Add(this, "m", "Medium respawn time", (player, _) => PickRespawn(player, RespawnSpeed.Medium));
-        words.Add(this, "slow", "Long respawn time", (player, _) => PickRespawn(player, RespawnSpeed.Slow));
-        words.Add(this, "s", "Long respawn time", (player, _) => PickRespawn(player, RespawnSpeed.Slow));
         words.Add(this, "hs", "Headshots only: your body shots do no damage", (player, _) => ToggleHeadshots(player));
         words.Add(this, "sounds", "Turn the kill sounds on or off", (player, _) => ToggleKillSounds(player));
 
@@ -189,14 +186,6 @@ public sealed class ServersDmPlugin : BasePlugin
             "sv_hibernate_when_empty 0",
             _hasBotTree ? $"mp_bot_ai_bt \"{BotTree}\"" : "",
         }));
-
-    private static float DelayOf(RespawnSpeed speed) =>
-        speed switch
-        {
-            RespawnSpeed.Fast => 0.5f,
-            RespawnSpeed.Medium => 1.5f,
-            _ => 3f,
-        };
 
     private static bool OnTeam(CCSPlayerController player) =>
         player.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist;
@@ -316,6 +305,7 @@ public sealed class ServersDmPlugin : BasePlugin
         if (Players.IsHuman(victim))
         {
             _deadSince[victim!.Slot] = Server.CurrentTime;
+            AddTimer(RespawnDelay, () => Revive(victim), TimerFlags.STOP_ON_MAPCHANGE);
         }
 
         if (IsFighter(attacker) && attacker != victim)
@@ -356,7 +346,16 @@ public sealed class ServersDmPlugin : BasePlugin
         }
     }
 
-    // Everyone dead past their delay comes back, wherever the game picks.
+    private static void Revive(CCSPlayerController player)
+    {
+        if (player.IsValid && OnTeam(player) && !IsAlive(player))
+        {
+            player.Respawn();
+        }
+    }
+
+    // Whoever is still dead comes back, wherever the game picks: a player who
+    // just joined a side, or one whose respawn on death did not take.
     private void RespawnDue()
     {
         var now = Server.CurrentTime;
@@ -371,12 +370,11 @@ public sealed class ServersDmPlugin : BasePlugin
 
             if (!_deadSince.TryGetValue(player.Slot, out var since))
             {
-                // Just joined a side: nobody respawns them otherwise.
-                _deadSince[player.Slot] = now - DelayOf(RespawnSpeed.Slow);
+                _deadSince[player.Slot] = now;
                 continue;
             }
 
-            var due = since + DelayOf(_loadouts.For(player.SteamID).Respawn);
+            var due = since + RespawnDelay;
 
             if (now >= due)
             {
@@ -408,7 +406,7 @@ public sealed class ServersDmPlugin : BasePlugin
             }
 
             Chat.To(player, $"Welcome to {ChatColors.Gold}Deathmatch{ChatColors.Default}: health, armour and ammo back on every kill. Buy anything, anywhere: what you buy is what you spawn with.");
-            Chat.To(player, $"{ChatColors.Green}!guns{ChatColors.Default} weapons · {ChatColors.Green}!fast !medium !slow{ChatColors.Default} respawn · {ChatColors.Green}!hs{ChatColors.Default} headshots only · {ChatColors.Green}!sounds{ChatColors.Default} kill sounds · {ChatColors.Green}!rtv !nominate !timeleft");
+            Chat.To(player, $"{ChatColors.Green}!guns{ChatColors.Default} weapons · {ChatColors.Green}!hs{ChatColors.Default} headshots only · {ChatColors.Green}!sounds{ChatColors.Default} kill sounds · {ChatColors.Green}!rtv !nominate !timeleft");
         }, TimerFlags.STOP_ON_MAPCHANGE);
 
         return HookResult.Continue;
@@ -465,13 +463,6 @@ public sealed class ServersDmPlugin : BasePlugin
         _loadouts.Save();
         Chat.To(player, $"Your main weapon: {ChatColors.Gold}{Weapons.NameOf(item)}");
         Equip(player);
-    }
-
-    private void PickRespawn(CCSPlayerController player, RespawnSpeed speed)
-    {
-        _loadouts.For(player.SteamID).Respawn = speed;
-        _loadouts.Save();
-        Chat.To(player, $"Respawn time: {ChatColors.Gold}{speed}{ChatColors.Default} ({DelayOf(speed):0.#}s)");
     }
 
     private void ToggleHeadshots(CCSPlayerController player)

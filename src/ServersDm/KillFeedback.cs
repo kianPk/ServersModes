@@ -22,10 +22,12 @@ public sealed class KillFeedback
 
     private const float MultiKillWindow = 4f;
 
-    private const string HeadshotHitSound = "sounds/buttons/bell1.vsnd_c";
-    private const string BodyHitSound = "sounds/buttons/blip1.vsnd_c";
+    // The game's sounds closest to xplay's: a short tick around 4.6 kHz on the
+    // body and a small bell at the same pitch on the head.
+    private const string HeadshotHitSound = "sounds/training/timer_bell.vsnd_c";
+    private const string BodyHitSound = "sounds/ui/chicken_egg_hatch_tap_final.vsnd_c";
     private const string KillSound = "sounds/ui/armsrace_kill_01.vsnd_c";
-    private const string HeadshotKillSound = "sounds/buttons/bell1.vsnd_c";
+    private const string HeadshotKillSound = HeadshotHitSound;
 
     private static readonly (string Name, string Color, string Sound)[] MultiKills =
     [
