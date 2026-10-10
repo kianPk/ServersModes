@@ -15,8 +15,8 @@ public sealed class BotWatch
 {
     private const float Interval = 5f;
     private const float Moved = 32f;
-    private const float WakeAfter = 20f;
-    private const float SlayAfter = 40f;
+    private const float WakeAfter = 15f;
+    private const float SlayAfter = 25f;
 
     private sealed class Watch
     {

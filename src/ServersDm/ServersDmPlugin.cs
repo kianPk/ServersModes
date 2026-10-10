@@ -22,7 +22,7 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.5.0";
+    public override string ModuleVersion => "1.5.1";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
 
@@ -117,6 +117,9 @@ public sealed class ServersDmPlugin : BasePlugin
         if (_hasBotTree)
         {
             Logger.LogInformation("Bots use {Tree}", BotTree);
+            // The deathmatch cfg puts the game's tree back on every map load,
+            // and each bot loads whichever is set when it spawns.
+            AddTimer(1f, () => Server.ExecuteCommand($"mp_bot_ai_bt \"{BotTree}\""), TimerFlags.REPEAT);
         }
         else
         {
