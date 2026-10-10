@@ -1,6 +1,5 @@
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
-using CounterStrikeSharp.API.Modules.Cvars;
 using CounterStrikeSharp.API.Modules.Menu;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
@@ -20,7 +19,7 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.3.3";
+    public override string ModuleVersion => "1.4.0";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
 
@@ -58,6 +57,7 @@ public sealed class ServersDmPlugin : BasePlugin
         _ = new SiteBanner(this);
         NoHealthshot.Register(this);
         _ = new KillFeedback(this, player => _loadouts.For(player.SteamID).KillSounds);
+        _ = new BotWatch(this);
 
         words.Add(this, "guns", "Choose your weapons", (player, _) => OpenPrimaries(player));
         words.Add(this, "ak", "Play with the AK-47", (player, _) => PickPrimary(player, "weapon_ak47"));
@@ -76,10 +76,8 @@ public sealed class ServersDmPlugin : BasePlugin
         RegisterListener<Listeners.OnMapStart>(_ =>
         {
             _deadSince.Clear();
-            _botPositions.Clear();
             ApplyRules();
         });
-        AddTimer(60f, ReportBots, TimerFlags.REPEAT);
         // Bots that sat through a hibernation wake up frozen, so the server
         // never sleeps; the shared server.cfg turns it back on every map.
         RegisterListener<Listeners.OnServerHibernationUpdate>(hibernating =>
@@ -140,65 +138,6 @@ public sealed class ServersDmPlugin : BasePlugin
             "mp_autokick 0",
             "sv_hibernate_when_empty 0",
         }));
-
-    // While someone plays: how many bots are alive, armed and have moved
-    // since the last report.
-    private readonly Dictionary<int, Vector> _botPositions = new();
-
-    private void ReportBots()
-    {
-        if (!Players.Humans().Any())
-        {
-            _botPositions.Clear();
-            return;
-        }
-
-        var bots = Utilities.GetPlayers().Where(player => player is { IsValid: true, IsBot: true, IsHLTV: false }).ToList();
-        var alive = bots.Where(IsAlive).ToList();
-        var armed = alive.Count(bot => bot.PlayerPawn.Value?.WeaponServices?.ActiveWeapon.Value is { IsValid: true });
-        var still = new List<string>();
-
-        foreach (var bot in alive)
-        {
-            if (bot.PlayerPawn.Value?.AbsOrigin is not { } origin)
-            {
-                continue;
-            }
-
-            var position = new Vector(origin.X, origin.Y, origin.Z);
-
-            if (_botPositions.TryGetValue(bot.Slot, out var last) && (last - position).Length() < 32)
-            {
-                still.Add(bot.PlayerName);
-            }
-
-            _botPositions[bot.Slot] = position;
-        }
-
-        Logger.LogInformation(
-            "Bots on {Map}: {Count} ({Alive} alive, {Armed} armed), standing still since last report: [{Still}]; bot_quota={Quota} bot_difficulty={Difficulty} sv_hibernate_when_empty={Hibernate} bot_stop={Stop} bot_freeze={Freeze} bot_zombie={Zombie}",
-            Server.MapName, bots.Count, alive.Count, armed, string.Join(", ", still),
-            Cvar("bot_quota"), Cvar("bot_difficulty"), Cvar("sv_hibernate_when_empty"),
-            Cvar("bot_stop"), Cvar("bot_freeze"), Cvar("bot_zombie"));
-    }
-
-    private static string Cvar(string name)
-    {
-        var convar = ConVar.Find(name);
-
-        if (convar == null)
-        {
-            return "missing";
-        }
-
-        return convar.Type switch
-        {
-            ConVarType.Bool => convar.GetPrimitiveValue<bool>() ? "1" : "0",
-            ConVarType.Int32 => convar.GetPrimitiveValue<int>().ToString(),
-            ConVarType.Float32 => convar.GetPrimitiveValue<float>().ToString(),
-            _ => convar.StringValue,
-        };
-    }
 
     private static float DelayOf(RespawnSpeed speed) =>
         speed switch
