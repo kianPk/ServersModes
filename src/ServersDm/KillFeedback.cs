@@ -1,6 +1,7 @@
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Cvars;
+using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
 using Microsoft.Extensions.Logging;
 using ServersModes.Shared;
@@ -80,12 +81,44 @@ public sealed class KillFeedback
         _logger.LogWarning("mm_extra_addons lacked the announcer addon; set it to {Addons}, mounted from the next map", value);
     }
 
+    // MultiAddonManager tries its download once, when the Steam API comes up,
+    // which is before the server has logged on, so the download fails and the
+    // server runs without the addon until the map changes. Setting the addons
+    // again makes it retry; it reloads the map itself once the download is done.
+    private const int MaxDownloadRetries = 5;
+    private int _downloadRetries;
+
+    private void RetryAnnouncerDownload()
+    {
+        if (_downloadRetries >= MaxDownloadRetries || ConVar.Find("mm_extra_addons") is not { } addons || AnnouncerInstalled())
+        {
+            return;
+        }
+
+        _downloadRetries++;
+        var value = addons.StringValue;
+        Server.ExecuteCommand($"mm_extra_addons \"\";mm_extra_addons \"{value}\"");
+        _logger.LogWarning("Announcer addon {Addon} is not on the server yet; asked MultiAddonManager to download it again ({Try}/{Max})",
+            AnnouncerAddon, _downloadRetries, MaxDownloadRetries);
+    }
+
+    // Where MultiAddonManager looks for it: game/bin/linuxsteamrt64/steamapps.
+    private static bool AnnouncerInstalled()
+    {
+        var game = Server.GameDirectory;
+
+        return new[] { game, Path.GetDirectoryName(game.TrimEnd('/')) ?? game }
+            .Select(root => Path.Combine(root, "bin", "linuxsteamrt64", "steamapps", "workshop", "content", "730", AnnouncerAddon))
+            .Any(Directory.Exists);
+    }
+
     public KillFeedback(BasePlugin plugin, Func<CCSPlayerController, bool> wantsSounds)
     {
         _wantsSounds = wantsSounds;
         _logger = plugin.Logger;
         CheckAnnouncerAddon();
         plugin.RegisterListener<Listeners.OnMapStart>(_ => CheckAnnouncerAddon());
+        plugin.AddTimer(30f, RetryAnnouncerDownload, TimerFlags.REPEAT);
         plugin.RegisterListener<Listeners.OnServerPrecacheResources>(manifest => manifest.AddResource(AnnouncerSoundEvents));
         plugin.RegisterEventHandler<EventPlayerHurt>(OnHurt);
         plugin.RegisterEventHandler<EventPlayerDeath>(OnDeath);
