@@ -18,7 +18,7 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.2.0";
+    public override string ModuleVersion => "1.3.0";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
 
@@ -111,6 +111,12 @@ public sealed class ServersDmPlugin : BasePlugin
             "mp_death_drop_gun 0",
             "mp_weapons_allow_map_placed 0",
             "sv_infinite_ammo 2",
+            // What bots spawn with; players' own picks replace it.
+            "mp_t_default_primary weapon_ak47",
+            "mp_ct_default_primary weapon_m4a1",
+            "mp_t_default_secondary weapon_deagle",
+            "mp_ct_default_secondary weapon_deagle",
+            "mp_free_armor 2",
             $"bot_quota {BotQuota}",
             "bot_quota_mode fill",
             "bot_difficulty 3",
@@ -141,7 +147,9 @@ public sealed class ServersDmPlugin : BasePlugin
     {
         var player = @event.Userid;
 
-        if (!IsFighter(player))
+        // Bots keep what the game spawned them with: taking a bot's weapons
+        // away and handing it new ones can leave it standing still.
+        if (!Players.IsHuman(player))
         {
             return HookResult.Continue;
         }
@@ -158,15 +166,11 @@ public sealed class ServersDmPlugin : BasePlugin
             return;
         }
 
-        var (primary, secondary) = player.IsBot
-            ? (Weapons.BotPrimaries[Random.Shared.Next(Weapons.BotPrimaries.Length)],
-                Weapons.BotSecondaries[Random.Shared.Next(Weapons.BotSecondaries.Length)])
-            : (_loadouts.For(player.SteamID).Primary, _loadouts.For(player.SteamID).Secondary);
-
+        var loadout = _loadouts.For(player.SteamID);
         player.RemoveWeapons();
         player.GiveNamedItem("weapon_knife");
-        player.GiveNamedItem(secondary);
-        player.GiveNamedItem(primary);
+        player.GiveNamedItem(loadout.Secondary);
+        player.GiveNamedItem(loadout.Primary);
         player.GiveNamedItem("item_assaultsuit");
         pawn.Health = 100;
         Utilities.SetStateChanged(pawn, "CBaseEntity", "m_iHealth");

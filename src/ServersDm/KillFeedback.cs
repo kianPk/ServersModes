@@ -7,10 +7,15 @@ namespace ServersModes.Dm;
 
 // What a player hears and sees for their own hits and kills: a ding on every
 // headshot that does not kill, a kill sound (a heavier one for a headshot),
-// and a callout with its own stinger for kills in quick succession. Only
-// stock game sounds: a custom one would need every client to download it.
+// and the announcer for kills in quick succession and for kill streaks.
+// The announcer's voice lines come from a workshop addon that
+// MultiAddonManager makes every client download; without it they are silent
+// and only the callout text shows.
 public sealed class KillFeedback
 {
+    public const string AnnouncerAddon = "3461824328";
+    private const string AnnouncerSoundEvents = "soundevents/soundevents_quakesounds.vsndevts";
+
     private const float MultiKillWindow = 4f;
 
     private const string HeadshotHitSound = "sounds/training/bell_normal.vsnd_c";
@@ -19,33 +24,50 @@ public sealed class KillFeedback
 
     private static readonly (string Name, string Color, string Sound)[] MultiKills =
     [
-        ("DOUBLE KILL", "#46a758", "sounds/music/kill_01.vsnd_c"),
-        ("TRIPLE KILL", "#3e9bf5", "sounds/music/kill_02.vsnd_c"),
-        ("QUADRA KILL", "#a855f7", "sounds/music/kill_03.vsnd_c"),
-        ("PENTA KILL", "#f5a524", "sounds/music/kill_bonus.vsnd_c"),
-        ("UNSTOPPABLE", "#e5484d", "sounds/music/kill_bonus.vsnd_c"),
+        ("DOUBLE KILL", "#46a758", "QuakeSoundsD.Doublekill"),
+        ("TRIPLE KILL", "#3e9bf5", "QuakeSoundsD.Triplekill"),
+        ("ULTRA KILL", "#a855f7", "QuakeSoundsD.Ultrakill"),
+        ("MONSTER KILL", "#f5a524", "QuakeSoundsD.Monsterkill"),
+        ("LUDICROUS KILL", "#e5484d", "QuakeSoundsD.Ludicrouskill"),
     ];
+
+    private static readonly Dictionary<int, (string Name, string Sound)> Streaks = new()
+    {
+        [5] = ("KILLING SPREE", "QuakeSoundsD.Killingspree"),
+        [10] = ("RAMPAGE", "QuakeSoundsD.Rampage"),
+        [15] = ("DOMINATING", "QuakeSoundsD.Dominating"),
+        [20] = ("UNSTOPPABLE", "QuakeSoundsD.Unstoppable"),
+        [25] = ("GODLIKE", "QuakeSoundsD.Godlike"),
+    };
 
     private const int HitgroupHead = 1;
 
+    private sealed class Tally
+    {
+        public int Chain;
+        public float Last;
+        public int Streak;
+    }
+
     private readonly Func<CCSPlayerController, bool> _wantsSounds;
-    private readonly Dictionary<int, (int Count, float Last)> _chains = new();
+    private readonly Dictionary<int, Tally> _tallies = new();
 
     public KillFeedback(BasePlugin plugin, Func<CCSPlayerController, bool> wantsSounds)
     {
         _wantsSounds = wantsSounds;
+        plugin.RegisterListener<Listeners.OnServerPrecacheResources>(manifest => manifest.AddResource(AnnouncerSoundEvents));
         plugin.RegisterEventHandler<EventPlayerHurt>(OnHurt);
         plugin.RegisterEventHandler<EventPlayerDeath>(OnDeath);
         plugin.RegisterEventHandler<EventPlayerDisconnect>((@event, _) =>
         {
             if (@event.Userid is { IsValid: true } player)
             {
-                _chains.Remove(player.Slot);
+                _tallies.Remove(player.Slot);
             }
 
             return HookResult.Continue;
         });
-        plugin.RegisterListener<Listeners.OnMapStart>(_ => _chains.Clear());
+        plugin.RegisterListener<Listeners.OnMapStart>(_ => _tallies.Clear());
     }
 
     private HookResult OnHurt(EventPlayerHurt @event, GameEventInfo info)
@@ -54,7 +76,7 @@ public sealed class KillFeedback
 
         if (@event.Health > 0 && @event.Hitgroup == HitgroupHead && Players.IsHuman(attacker) && attacker != @event.Userid)
         {
-            Play(attacker!, HeadshotHitSound);
+            PlayFile(attacker!, HeadshotHitSound);
         }
 
         return HookResult.Continue;
@@ -64,7 +86,7 @@ public sealed class KillFeedback
     {
         if (@event.Userid is { IsValid: true } victim)
         {
-            _chains.Remove(victim.Slot);
+            _tallies.Remove(victim.Slot);
         }
 
         var attacker = @event.Attacker;
@@ -75,34 +97,62 @@ public sealed class KillFeedback
         }
 
         var now = Server.CurrentTime;
-        var count = _chains.TryGetValue(attacker!.Slot, out var chain) && now - chain.Last <= MultiKillWindow
-            ? chain.Count + 1
-            : 1;
-        _chains[attacker.Slot] = (count, now);
 
-        if (count < 2)
+        if (!_tallies.TryGetValue(attacker!.Slot, out var tally))
         {
-            Play(attacker, @event.Headshot ? HeadshotKillSound : KillSound);
-            return HookResult.Continue;
+            tally = new Tally();
+            _tallies[attacker.Slot] = tally;
         }
 
-        var (name, color, sound) = MultiKills[Math.Min(count - 2, MultiKills.Length - 1)];
-        Play(attacker, sound);
-        attacker.PrintToCenterHtml($"<font class='fontSize-xl' color='{color}'><b>{name}</b></font>", 2);
+        tally.Chain = now - tally.Last <= MultiKillWindow ? tally.Chain + 1 : 1;
+        tally.Last = now;
+        tally.Streak++;
 
-        if (count >= 4)
+        if (tally.Chain >= 2)
         {
-            Chat.All($"{ChatColors.Green}{attacker.PlayerName}{ChatColors.Default} got a {ChatColors.Gold}{name}{ChatColors.Default}!");
+            var (name, color, sound) = MultiKills[Math.Min(tally.Chain - 2, MultiKills.Length - 1)];
+            PlayEvent(attacker, sound);
+            Callout(attacker, name, color);
+
+            if (tally.Chain >= 4)
+            {
+                Chat.All($"{ChatColors.Green}{attacker.PlayerName}{ChatColors.Default} got an {ChatColors.Gold}{name}{ChatColors.Default}!");
+            }
+        }
+        else if (Streaks.TryGetValue(tally.Streak, out var streak))
+        {
+            PlayEvent(attacker, streak.Sound);
+            Callout(attacker, streak.Name, "#f5a524");
+        }
+        else
+        {
+            PlayFile(attacker, @event.Headshot ? HeadshotKillSound : KillSound);
+        }
+
+        if (Streaks.TryGetValue(tally.Streak, out var reached))
+        {
+            Chat.All($"{ChatColors.Green}{attacker.PlayerName}{ChatColors.Default} is on a {ChatColors.Gold}{reached.Name}{ChatColors.Default} ({tally.Streak} kills)!");
         }
 
         return HookResult.Continue;
     }
 
-    private void Play(CCSPlayerController player, string sound)
+    private static void Callout(CCSPlayerController player, string name, string color) =>
+        player.PrintToCenterHtml($"<font class='fontSize-xl' color='{color}'><b>{name}</b></font>", 2);
+
+    private void PlayFile(CCSPlayerController player, string sound)
     {
         if (_wantsSounds(player))
         {
             player.ExecuteClientCommand($"play {sound}");
+        }
+    }
+
+    private void PlayEvent(CCSPlayerController player, string soundEvent)
+    {
+        if (_wantsSounds(player))
+        {
+            player.EmitSound(soundEvent, [player]);
         }
     }
 }

@@ -39,17 +39,6 @@ public static class Weapons
         new("R8 Revolver", "weapon_revolver"),
     ];
 
-    // What bots carry: the rifles people actually play, with the odd AWP.
-    public static readonly string[] BotPrimaries =
-    [
-        "weapon_ak47", "weapon_ak47", "weapon_ak47",
-        "weapon_m4a1", "weapon_m4a1",
-        "weapon_m4a1_silencer", "weapon_m4a1_silencer",
-        "weapon_awp",
-    ];
-
-    public static readonly string[] BotSecondaries = ["weapon_deagle", "weapon_usp_silencer", "weapon_glock"];
-
     public static string NameOf(string item) =>
         Primaries.Concat(Secondaries).FirstOrDefault(weapon => weapon.Item == item)?.Name ?? item;
 }
