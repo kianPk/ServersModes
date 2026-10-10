@@ -20,7 +20,7 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.3.1";
+    public override string ModuleVersion => "1.3.2";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
 
@@ -76,9 +76,10 @@ public sealed class ServersDmPlugin : BasePlugin
         RegisterListener<Listeners.OnMapStart>(_ =>
         {
             _deadSince.Clear();
+            _botPositions.Clear();
             ApplyRules();
-            AddTimer(15f, ReportBots, TimerFlags.STOP_ON_MAPCHANGE);
         });
+        AddTimer(60f, ReportBots, TimerFlags.REPEAT);
         // Bots that sat through a hibernation wake up frozen, so the server
         // never sleeps; the shared server.cfg turns it back on every map.
         RegisterListener<Listeners.OnServerHibernationUpdate>(hibernating =>
@@ -140,16 +141,44 @@ public sealed class ServersDmPlugin : BasePlugin
             "sv_hibernate_when_empty 0",
         }));
 
+    // While someone plays: how many bots are alive, armed and have moved
+    // since the last report.
+    private readonly Dictionary<int, Vector> _botPositions = new();
+
     private void ReportBots()
     {
+        if (!Players.Humans().Any())
+        {
+            _botPositions.Clear();
+            return;
+        }
+
         var bots = Utilities.GetPlayers().Where(player => player is { IsValid: true, IsBot: true, IsHLTV: false }).ToList();
-        var alive = bots.Count(IsAlive);
-        var armed = bots.Count(bot => bot.PlayerPawn.Value?.WeaponServices?.ActiveWeapon.Value is { IsValid: true });
+        var alive = bots.Where(IsAlive).ToList();
+        var armed = alive.Count(bot => bot.PlayerPawn.Value?.WeaponServices?.ActiveWeapon.Value is { IsValid: true });
+        var still = new List<string>();
+
+        foreach (var bot in alive)
+        {
+            if (bot.PlayerPawn.Value?.AbsOrigin is not { } origin)
+            {
+                continue;
+            }
+
+            var position = new Vector(origin.X, origin.Y, origin.Z);
+
+            if (_botPositions.TryGetValue(bot.Slot, out var last) && (last - position).Length() < 32)
+            {
+                still.Add(bot.PlayerName);
+            }
+
+            _botPositions[bot.Slot] = position;
+        }
 
         Logger.LogInformation(
-            "Bots on {Map}: {Count} ({Alive} alive, {Armed} armed); bot_quota={Quota} bot_difficulty={Difficulty} sv_hibernate_when_empty={Hibernate} mp_bot_ai_bt=\"{Tree}\" bot_stop={Stop} bot_freeze={Freeze} bot_zombie={Zombie}",
-            Server.MapName, bots.Count, alive, armed,
-            Cvar("bot_quota"), Cvar("bot_difficulty"), Cvar("sv_hibernate_when_empty"), Cvar("mp_bot_ai_bt"),
+            "Bots on {Map}: {Count} ({Alive} alive, {Armed} armed), standing still since last report: [{Still}]; bot_quota={Quota} bot_difficulty={Difficulty} sv_hibernate_when_empty={Hibernate} bot_stop={Stop} bot_freeze={Freeze} bot_zombie={Zombie}",
+            Server.MapName, bots.Count, alive.Count, armed, string.Join(", ", still),
+            Cvar("bot_quota"), Cvar("bot_difficulty"), Cvar("sv_hibernate_when_empty"),
             Cvar("bot_stop"), Cvar("bot_freeze"), Cvar("bot_zombie"));
     }
 
