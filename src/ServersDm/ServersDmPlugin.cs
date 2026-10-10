@@ -10,14 +10,15 @@ namespace ServersModes.Dm;
 // Free-for-all deathmatch the way xplay runs it: the weapons each player picked
 // with !guns on every spawn, health, armour and a full magazine back on every
 // kill, the game's line-of-sight spawns, and a respawn delay each player picks.
-// The game does not respawn anyone (mp_respawn_on_death_* 0); this does, after
-// that player's delay, so "slow" can be slower than the game would be.
+// The game respawns everyone: a bot a plugin respawns comes back with its AI
+// asleep and just stands there. Players who picked a shorter delay than the
+// game's are brought back sooner by this plugin.
 // Expert bots keep the server full, and each player who joins takes a bot's
 // place (bot_quota_mode fill).
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.1.0";
+    public override string ModuleVersion => "1.2.0";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
 
@@ -41,10 +42,6 @@ public sealed class ServersDmPlugin : BasePlugin
 
     // Players plus bots; every player who joins replaces one bot.
     private const int BotQuota = 10;
-    private const float BotRespawnDelay = 1.5f;
-
-    private const string KillSound = "sounds/ui/armsrace_kill_01.vsnd_c";
-    private const string HeadshotSound = "sounds/buttons/bell1.vsnd_c";
 
     private LoadoutStore _loadouts = null!;
     private readonly Dictionary<int, float> _deadSince = new();
@@ -58,6 +55,7 @@ public sealed class ServersDmPlugin : BasePlugin
         _ = new MapVote(this, words, "dm", Maps, 5, MapEnd.Timed);
         _ = new SiteBanner(this);
         NoHealthshot.Register(this);
+        _ = new KillFeedback(this, player => _loadouts.For(player.SteamID).KillSounds);
 
         words.Add(this, "guns", "Choose your weapons", (player, _) => OpenPrimaries(player));
         words.Add(this, "ak", "Play with the AK-47", (player, _) => PickPrimary(player, "weapon_ak47"));
@@ -99,8 +97,8 @@ public sealed class ServersDmPlugin : BasePlugin
         {
             "mp_teammates_are_enemies 1",
             "mp_ignore_round_win_conditions 1",
-            "mp_respawn_on_death_t 0",
-            "mp_respawn_on_death_ct 0",
+            "mp_respawn_on_death_t 1",
+            "mp_respawn_on_death_ct 1",
             "mp_randomspawn 1",
             "mp_randomspawn_los 1",
             "mp_respawn_immunitytime 1",
@@ -138,9 +136,6 @@ public sealed class ServersDmPlugin : BasePlugin
 
     private static bool IsFighter(CCSPlayerController? player) =>
         player is { IsValid: true, IsHLTV: false } && (player.IsBot || Players.IsHuman(player));
-
-    private static IEnumerable<CCSPlayerController> Fighters() =>
-        Utilities.GetPlayers().Where(IsFighter);
 
     private HookResult OnSpawn(EventPlayerSpawn @event, GameEventInfo info)
     {
@@ -182,7 +177,7 @@ public sealed class ServersDmPlugin : BasePlugin
         var victim = @event.Userid;
         var attacker = @event.Attacker;
 
-        if (IsFighter(victim))
+        if (Players.IsHuman(victim))
         {
             _deadSince[victim!.Slot] = Server.CurrentTime;
         }
@@ -190,11 +185,6 @@ public sealed class ServersDmPlugin : BasePlugin
         if (IsFighter(attacker) && attacker != victim)
         {
             Server.NextFrame(() => Reward(attacker!));
-
-            if (Players.IsHuman(attacker) && _loadouts.For(attacker!.SteamID).KillSounds)
-            {
-                attacker.ExecuteClientCommand($"play {(@event.Headshot ? HeadshotSound : KillSound)}");
-            }
         }
 
         return HookResult.Continue;
@@ -235,7 +225,7 @@ public sealed class ServersDmPlugin : BasePlugin
     {
         var now = Server.CurrentTime;
 
-        foreach (var player in Fighters())
+        foreach (var player in Players.Humans())
         {
             if (!OnTeam(player) || IsAlive(player))
             {
@@ -250,8 +240,7 @@ public sealed class ServersDmPlugin : BasePlugin
                 continue;
             }
 
-            var delay = player.IsBot ? BotRespawnDelay : DelayOf(_loadouts.For(player.SteamID).Respawn);
-            var due = since + delay;
+            var due = since + DelayOf(_loadouts.For(player.SteamID).Respawn);
 
             if (now >= due)
             {
