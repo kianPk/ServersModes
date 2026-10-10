@@ -1,8 +1,10 @@
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
+using CounterStrikeSharp.API.Modules.Cvars;
 using CounterStrikeSharp.API.Modules.Menu;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
+using Microsoft.Extensions.Logging;
 using ServersModes.Shared;
 
 namespace ServersModes.Dm;
@@ -18,7 +20,7 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.3.0";
+    public override string ModuleVersion => "1.3.1";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
 
@@ -75,6 +77,17 @@ public sealed class ServersDmPlugin : BasePlugin
         {
             _deadSince.Clear();
             ApplyRules();
+            AddTimer(15f, ReportBots, TimerFlags.STOP_ON_MAPCHANGE);
+        });
+        // Bots that sat through a hibernation wake up frozen, so the server
+        // never sleeps; the shared server.cfg turns it back on every map.
+        RegisterListener<Listeners.OnServerHibernationUpdate>(hibernating =>
+        {
+            if (hibernating)
+            {
+                Logger.LogWarning("Server went to hibernate; turning sv_hibernate_when_empty off again");
+                Server.ExecuteCommand("sv_hibernate_when_empty 0");
+            }
         });
         RegisterEventHandler<EventRoundStart>((_, _) =>
         {
@@ -124,7 +137,39 @@ public sealed class ServersDmPlugin : BasePlugin
             "bot_join_team any",
             "bot_chatter off",
             "mp_autokick 0",
+            "sv_hibernate_when_empty 0",
         }));
+
+    private void ReportBots()
+    {
+        var bots = Utilities.GetPlayers().Where(player => player is { IsValid: true, IsBot: true, IsHLTV: false }).ToList();
+        var alive = bots.Count(IsAlive);
+        var armed = bots.Count(bot => bot.PlayerPawn.Value?.WeaponServices?.ActiveWeapon.Value is { IsValid: true });
+
+        Logger.LogInformation(
+            "Bots on {Map}: {Count} ({Alive} alive, {Armed} armed); bot_quota={Quota} bot_difficulty={Difficulty} sv_hibernate_when_empty={Hibernate} mp_bot_ai_bt=\"{Tree}\" bot_stop={Stop} bot_freeze={Freeze} bot_zombie={Zombie}",
+            Server.MapName, bots.Count, alive, armed,
+            Cvar("bot_quota"), Cvar("bot_difficulty"), Cvar("sv_hibernate_when_empty"), Cvar("mp_bot_ai_bt"),
+            Cvar("bot_stop"), Cvar("bot_freeze"), Cvar("bot_zombie"));
+    }
+
+    private static string Cvar(string name)
+    {
+        var convar = ConVar.Find(name);
+
+        if (convar == null)
+        {
+            return "missing";
+        }
+
+        return convar.Type switch
+        {
+            ConVarType.Bool => convar.GetPrimitiveValue<bool>() ? "1" : "0",
+            ConVarType.Int32 => convar.GetPrimitiveValue<int>().ToString(),
+            ConVarType.Float32 => convar.GetPrimitiveValue<float>().ToString(),
+            _ => convar.StringValue,
+        };
+    }
 
     private static float DelayOf(RespawnSpeed speed) =>
         speed switch

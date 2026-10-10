@@ -1,6 +1,8 @@
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
+using CounterStrikeSharp.API.Modules.Cvars;
 using CounterStrikeSharp.API.Modules.Utils;
+using Microsoft.Extensions.Logging;
 using ServersModes.Shared;
 
 namespace ServersModes.Dm;
@@ -50,11 +52,40 @@ public sealed class KillFeedback
     }
 
     private readonly Func<CCSPlayerController, bool> _wantsSounds;
+    private readonly ILogger _logger;
     private readonly Dictionary<int, Tally> _tallies = new();
+
+    // MultiAddonManager mounts what mm_extra_addons lists on the next map
+    // load, so an addon added here is heard from the next map on.
+    private void CheckAnnouncerAddon()
+    {
+        var addons = ConVar.Find("mm_extra_addons");
+
+        if (addons == null)
+        {
+            _logger.LogWarning("MultiAddonManager is not loaded: the kill announcer (workshop addon {Addon}) stays silent", AnnouncerAddon);
+            return;
+        }
+
+        var listed = addons.StringValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (listed.Contains(AnnouncerAddon))
+        {
+            _logger.LogInformation("MultiAddonManager mounts {Addons}", addons.StringValue);
+            return;
+        }
+
+        var value = string.Join(',', listed.Append(AnnouncerAddon));
+        Server.ExecuteCommand($"mm_extra_addons \"{value}\"");
+        _logger.LogWarning("mm_extra_addons lacked the announcer addon; set it to {Addons}, mounted from the next map", value);
+    }
 
     public KillFeedback(BasePlugin plugin, Func<CCSPlayerController, bool> wantsSounds)
     {
         _wantsSounds = wantsSounds;
+        _logger = plugin.Logger;
+        CheckAnnouncerAddon();
+        plugin.RegisterListener<Listeners.OnMapStart>(_ => CheckAnnouncerAddon());
         plugin.RegisterListener<Listeners.OnServerPrecacheResources>(manifest => manifest.AddResource(AnnouncerSoundEvents));
         plugin.RegisterEventHandler<EventPlayerHurt>(OnHurt);
         plugin.RegisterEventHandler<EventPlayerDeath>(OnDeath);
