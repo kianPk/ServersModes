@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.4.1";
+    public override string ModuleVersion => "1.4.0";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, an expert bot for whoever is alone, and the Duels map rotation.";
 
@@ -165,11 +165,6 @@ public sealed class ServersDuelsPlugin : BasePlugin
             "mp_dm_time_between_bonus_max 9999",
             "mp_dm_time_between_bonus_min 9999",
             "mp_buytime 0",
-            "bot_stop 0",
-            "bot_freeze 0",
-            "bot_zombie 0",
-            "bot_dont_shoot 0",
-            "bot_ignore_players 0",
             "bot_quota 0",
             "bot_quota_mode normal",
             "bot_kick",
@@ -301,35 +296,15 @@ public sealed class ServersDuelsPlugin : BasePlugin
             return;
         }
 
-        if (bots == 1)
-        {
-            var bot = Utilities.GetPlayers().First(player => player is { IsValid: true, IsBot: true, IsHLTV: false });
-            var human = humans[0].Team;
-
-            if (bot.Team == human)
-            {
-                bot.ChangeTeam(human == CsTeam.Terrorist ? CsTeam.CounterTerrorist : CsTeam.Terrorist);
-            }
-            else if (bot.PlayerPawn.Value is { LifeState: (byte)LifeState_t.LIFE_ALIVE } pawn)
-            {
-                WakeBot(pawn);
-            }
-
-            return;
-        }
-
         var now = Server.CurrentTime;
 
-        if (now - _botAsked < BotJoinGrace)
+        if (bots == 1 || now - _botAsked < BotJoinGrace)
         {
             return;
         }
 
-        // On the other side: the bots' own AI never fires at a teammate,
-        // whatever mp_teammates_are_enemies says.
         _botAsked = now;
-        var side = humans[0].Team == CsTeam.Terrorist ? "ct" : "t";
-        Server.ExecuteCommand($"bot_difficulty {BotDifficulty};bot_quota_mode normal;bot_join_team {side};bot_quota 1");
+        Server.ExecuteCommand($"bot_difficulty {BotDifficulty};bot_quota_mode normal;bot_join_team any;bot_quota 1");
         Chat.To(humans[0], "Nobody else is here yet — you'll duel an expert bot until someone joins.");
     }
 
@@ -602,30 +577,9 @@ public sealed class ServersDuelsPlugin : BasePlugin
         player.GiveNamedItem(preferences.Pistol);
         player.GiveNamedItem(duel.Round == RoundType.Pistol ? "item_kevlar" : "item_assaultsuit");
 
-        if (player.IsBot)
-        {
-            WakeBot(pawn);
-            Logger.LogInformation(
-                "Bot armed in arena {Arena} for {Round}: {Bot} | ai={HasAi} weapon={Weapon} | opponent {Opponent}",
-                duel.Arena + 1, duel.Round, Describe(player), pawn.Bot != null,
-                pawn.WeaponServices?.ActiveWeapon.Value?.DesignerName, Describe(PlayerAt(duel.Opponent(slot))));
-        }
-
         var opponent = PlayerAt(duel.Opponent(slot));
         var (mine, theirs) = Score(slot, duel.Opponent(slot));
         Chat.To(player, $"{ChatColors.Gold}Arena {duel.Arena + 1}{ChatColors.Default} · {Weapons.RoundName(duel.Round)} · vs {ChatColors.LightRed}{opponent?.PlayerName}{ChatColors.Default} · {ChatColors.Green}{mine}{ChatColors.Default}-{ChatColors.LightRed}{theirs}");
-    }
-
-    // The game can leave a bot's AI switched off after a teleport, and a bot
-    // like that stands with a gun in hand and never fires.
-    private static void WakeBot(CCSPlayerPawn pawn)
-    {
-        pawn.BotAllowActive = true;
-
-        if (pawn.Bot is { } ai)
-        {
-            ai.AllowActive = true;
-        }
     }
 
     private static void Heal(CCSPlayerPawn pawn)
