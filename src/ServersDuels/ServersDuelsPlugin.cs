@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.4.2";
+    public override string ModuleVersion => "1.4.1";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, an expert bot for whoever is alone, and the Duels map rotation.";
 
@@ -609,50 +609,11 @@ public sealed class ServersDuelsPlugin : BasePlugin
                 "Bot armed in arena {Arena} for {Round}: {Bot} | ai={HasAi} weapon={Weapon} | opponent {Opponent}",
                 duel.Arena + 1, duel.Round, Describe(player), pawn.Bot != null,
                 pawn.WeaponServices?.ActiveWeapon.Value?.DesignerName, Describe(PlayerAt(duel.Opponent(slot))));
-            AddTimer(BotCheckEvery, () => KeepBotInArena(duel, slot, spot, 1), TimerFlags.STOP_ON_MAPCHANGE);
         }
 
         var opponent = PlayerAt(duel.Opponent(slot));
         var (mine, theirs) = Score(slot, duel.Opponent(slot));
         Chat.To(player, $"{ChatColors.Gold}Arena {duel.Arena + 1}{ChatColors.Default} · {Weapons.RoundName(duel.Round)} · vs {ChatColors.LightRed}{opponent?.PlayerName}{ChatColors.Default} · {ChatColors.Green}{mine}{ChatColors.Default}-{ChatColors.LightRed}{theirs}");
-    }
-
-    // A teleport right after a bot spawns does not always hold: the game can
-    // put it back where it spawned, a map away from its opponent. Checked for
-    // the first seconds of the duel and moved again for as long as it is off.
-    private const float BotCheckEvery = 0.5f;
-    private const int BotChecks = 8;
-    private const float BotStrayUnits = 300f;
-
-    private void KeepBotInArena(Duel duel, int slot, Spot spot, int check)
-    {
-        if (duel.Over || PlayerAt(slot) is not { IsBot: true } bot
-            || bot.PlayerPawn.Value is not { LifeState: (byte)LifeState_t.LIFE_ALIVE, AbsOrigin: { } at } pawn)
-        {
-            return;
-        }
-
-        var away = MathF.Sqrt(
-            (at.X - spot.X) * (at.X - spot.X) + (at.Y - spot.Y) * (at.Y - spot.Y) + (at.Z - spot.Z) * (at.Z - spot.Z));
-
-        if (away > BotStrayUnits)
-        {
-            Logger.LogWarning(
-                "Bot {Name} is {Away:0} units from its arena {Arena} spot on check {Check}; moving it again",
-                bot.PlayerName, away, duel.Arena + 1, check);
-            pawn.Teleport(spot.Origin, spot.Angles, new Vector(0, 0, 0));
-        }
-
-        WakeBot(pawn);
-
-        if (check < BotChecks)
-        {
-            AddTimer(BotCheckEvery, () => KeepBotInArena(duel, slot, spot, check + 1), TimerFlags.STOP_ON_MAPCHANGE);
-        }
-        else
-        {
-            Logger.LogInformation("Bot {Bot} after {Checks} checks", Describe(bot), check);
-        }
     }
 
     // The game can leave a bot's AI switched off after a teleport, and a bot
