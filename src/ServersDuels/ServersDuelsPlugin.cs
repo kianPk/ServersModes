@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.3.0";
+    public override string ModuleVersion => "1.4.3";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
 
