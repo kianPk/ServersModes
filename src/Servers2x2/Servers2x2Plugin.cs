@@ -8,9 +8,9 @@ namespace ServersModes.Wingman;
 public sealed class Servers2x2Plugin : BasePlugin
 {
     public override string ModuleName => "Servers 2x2";
-    public override string ModuleVersion => "1.0.7";
+    public override string ModuleVersion => "1.1.0";
     public override string ModuleAuthor => "kian";
-    public override string ModuleDescription => "The 2x2 (Wingman) map rotation and its vote.";
+    public override string ModuleDescription => "2x2 (Wingman) on a map only an admin changes.";
 
     private static readonly ServerMap[] Maps =
     [
@@ -26,7 +26,8 @@ public sealed class Servers2x2Plugin : BasePlugin
         Chat.Tag = "2x2";
 
         var words = new ChatWords(this);
-        _ = new MapVote(this, words, "2x2", Maps, 5, MapEnd.Match);
+        // A finished match starts over on the same map (mp_match_end_restart).
+        _ = new MapVote(this, words, "2x2", Maps, 5, MapEnd.Manual);
         _ = new SiteBanner(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);
@@ -46,7 +47,6 @@ public sealed class Servers2x2Plugin : BasePlugin
         AddTimer(5f, () =>
         {
             Chat.To(player!, $"Welcome to {ChatColors.Gold}2x2{ChatColors.Default}: Wingman rules, first to 9 rounds wins.");
-            Chat.To(player!, $"The next map is voted at match point. {ChatColors.Green}!rtv !nominate !timeleft !nextmap");
         }, TimerFlags.STOP_ON_MAPCHANGE);
 
         return HookResult.Continue;

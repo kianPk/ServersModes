@@ -103,6 +103,12 @@ public sealed class MapVote
         _current = arrived ?? new ServerMap(mapName, mapName);
         _pending = null;
 
+        // Nor may the game move on by itself: a finished match starts over here.
+        if (_end == MapEnd.Manual)
+        {
+            Server.ExecuteCommand("mp_match_end_restart 1;mp_match_end_changelevel 0;mp_endmatch_votenextmap 0");
+        }
+
         // CS2 logs into Steam only once a map has loaded, and cannot download
         // a workshop map before it has, so a workshop mode boots on a stock map
         // and moves to its pool from here. A workshop map whose internal name

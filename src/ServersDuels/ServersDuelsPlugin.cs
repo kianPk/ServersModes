@@ -20,9 +20,9 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.4.3";
+    public override string ModuleVersion => "1.5.0";
     public override string ModuleAuthor => "kian";
-    public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
+    public override string ModuleDescription => "Independent 1v1 arenas paired by rating, on a map only an admin changes.";
 
     // Until the pool kept on the site arrives.
     private static readonly ServerMap[] Maps =
@@ -100,7 +100,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _preferences = new PreferenceStore(Path.Combine(ModuleDirectory, "preferences.json"));
 
         var words = new ChatWords(this);
-        _ = new MapVote(this, words, "duels", Maps, 4, MapEnd.Timed);
+        _ = new MapVote(this, words, "duels", Maps, 4, MapEnd.Manual);
         _sounds = new ArenaSounds(this, Logger, ArenaOf);
         _banner = new SiteBanner(this);
         NoHealthshot.Register(this);
@@ -141,6 +141,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
         {
             "mp_teammates_are_enemies 1",
             "mp_ignore_round_win_conditions 1",
+            // The map stays until an admin changes it.
+            "mp_timelimit 0",
             "mp_roundtime 60",
             "mp_roundtime_defuse 60",
             "mp_roundtime_hostage 60",
@@ -834,7 +836,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         AddTimer(5f, () =>
         {
             Chat.To(player, $"Welcome to {ChatColors.Gold}Duels{ChatColors.Default}: every kill brings your next opponent right away, matched to your level.");
-            Chat.To(player, $"{ChatColors.Green}!guns{ChatColors.Default} weapons · {ChatColors.Green}!rounds{ChatColors.Default} round types · {ChatColors.Green}!queue{ChatColors.Default} · {ChatColors.Green}!afk{ChatColors.Default} · {ChatColors.Green}!rtv");
+            Chat.To(player, $"{ChatColors.Green}!guns{ChatColors.Default} weapons · {ChatColors.Green}!rounds{ChatColors.Default} round types · {ChatColors.Green}!queue{ChatColors.Default} · {ChatColors.Green}!afk");
         }, TimerFlags.STOP_ON_MAPCHANGE);
 
         return HookResult.Continue;

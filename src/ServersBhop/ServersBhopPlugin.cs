@@ -21,9 +21,9 @@ namespace ServersModes.Bhop;
 public sealed partial class ServersBhopPlugin : BasePlugin
 {
     public override string ModuleName => "Servers BHOP";
-    public override string ModuleVersion => "1.1.2";
+    public override string ModuleVersion => "1.2.0";
     public override string ModuleAuthor => "kian";
-    public override string ModuleDescription => "Bunny hop with a timer, records and the map rotation.";
+    public override string ModuleDescription => "Bunny hop with a timer and records, on a map only an admin changes.";
 
     private static readonly ServerMap[] Maps =
     [
@@ -87,7 +87,7 @@ public sealed partial class ServersBhopPlugin : BasePlugin
         _boxes = _boxStore.For(Server.MapName);
 
         var words = new ChatWords(this);
-        _ = new MapVote(this, words, "bhop", Maps, 5, MapEnd.Timed);
+        _ = new MapVote(this, words, "bhop", Maps, 5, MapEnd.Manual);
         _banner = new SiteBanner(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);
@@ -156,6 +156,8 @@ public sealed partial class ServersBhopPlugin : BasePlugin
             "sv_staminarecoveryrate 0",
             "sv_accelerate_use_weapon_speed 0",
             "sv_falldamage_scale 0",
+            // The map stays until an admin changes it.
+            "mp_timelimit 0",
             "mp_humanteam CT",
             "mp_solid_teammates 0",
             "mp_friendlyfire 0",
@@ -518,7 +520,7 @@ public sealed partial class ServersBhopPlugin : BasePlugin
             }
 
             Chat.To(player, $"Welcome to {ChatColors.Gold}BHOP{ChatColors.Default}: auto-bhop on, leave the start zone to start the timer.");
-            Chat.To(player, $"{ChatColors.Green}!r{ChatColors.Default} restart · {ChatColors.Green}!wr !pb !top{ChatColors.Default} records · {ChatColors.Green}!practice !noclip !resume{ChatColors.Default} · {ChatColors.Green}!rtv !nominate");
+            Chat.To(player, $"{ChatColors.Green}!r{ChatColors.Default} restart · {ChatColors.Green}!wr !pb !top{ChatColors.Default} records · {ChatColors.Green}!practice !noclip !resume");
         }, TimerFlags.STOP_ON_MAPCHANGE);
 
         return HookResult.Continue;
