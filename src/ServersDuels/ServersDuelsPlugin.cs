@@ -20,9 +20,9 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.3.0";
+    public override string ModuleVersion => "1.4.0";
     public override string ModuleAuthor => "kian";
-    public override string ModuleDescription => "Independent 1v1 arenas paired by rating, and the Duels map rotation.";
+    public override string ModuleDescription => "Independent 1v1 arenas paired by rating, an expert bot for whoever is alone, and the Duels map rotation.";
 
     // Until the pool kept on the site arrives.
     private static readonly ServerMap[] Maps =
@@ -48,6 +48,14 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
     private const double StartRating = 1000;
     private const double RatingStep = 32;
+
+    // Expert, the hardest the game has.
+    private const int BotDifficulty = 3;
+
+    // How long a requested bot gets to join before it is asked for again.
+    private const float BotJoinGrace = 5f;
+
+    private static readonly PlayerPreferences BotPreferences = new();
 
     private sealed class Duel
     {
@@ -86,6 +94,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
     private readonly Dictionary<int, Free> _free = new();
     private readonly HashSet<int> _afk = new();
     private bool _live;
+    private bool _wantBot;
+    private float _botAsked = float.MinValue;
 
     // By SteamID, for as long as the server runs: a map change keeps the order.
     private readonly Dictionary<ulong, double> _ratings = new();
@@ -104,7 +114,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _sounds = new ArenaSounds(this, Logger, ArenaOf);
         _banner = new SiteBanner(this);
         NoHealthshot.Register(this);
-        NoBots.Register(this);
+        NoBots.Register(this, () => _wantBot);
         _ = new IdleKick(this, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5));
 
         words.Add(this, "guns", "Choose your rifle and pistol", (player, _) => OpenGuns(player));
@@ -166,7 +176,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
     {
         var player = @event.Userid;
 
-        if (Players.IsHuman(player))
+        if (IsDuelist(player))
         {
             Server.NextFrame(() =>
             {
@@ -177,7 +187,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
             });
         }
 
-        if (!_live || !Players.IsHuman(player) || _duelOf.TryGetValue(player!.Slot, out var live) && !live.Over)
+        if (!_live || !IsDuelist(player) || _duelOf.TryGetValue(player!.Slot, out var live) && !live.Over)
         {
             return HookResult.Continue;
         }
@@ -219,6 +229,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _free.Clear();
         _scores.Clear();
         _live = false;
+        _wantBot = false;
+        _botAsked = float.MinValue;
     }
 
     private void EnsureArenas()
@@ -239,13 +251,61 @@ public sealed class ServersDuelsPlugin : BasePlugin
         );
     }
 
+    // A person, or the bot someone alone on the server duels.
     private static CCSPlayerController? PlayerAt(int slot)
     {
         var player = Utilities.GetPlayerFromSlot(slot);
-        return player is { IsValid: true, IsBot: false, IsHLTV: false }
-               && player.Connected == PlayerConnectedState.Connected
+        return player is { IsValid: true, IsHLTV: false }
+               && (player.IsBot || player.Connected == PlayerConnectedState.Connected)
             ? player
             : null;
+    }
+
+    private static bool IsDuelist(CCSPlayerController? player) =>
+        Players.IsHuman(player) || player is { IsValid: true, IsBot: true, IsHLTV: false };
+
+    private static bool IsBot(int slot) => PlayerAt(slot)?.IsBot == true;
+
+    // Someone alone on the server duels a bot at the game's hardest difficulty
+    // until a second person joins; then every bot goes.
+    private void UpdateBot()
+    {
+        var humans = Players.Humans().ToList();
+        _wantBot = _live
+                   && _arenas.Count > 0
+                   && humans.Count == 1
+                   && !_afk.Contains(humans[0].Slot)
+                   && humans[0].Team is CsTeam.Terrorist or CsTeam.CounterTerrorist;
+
+        if (!_wantBot)
+        {
+            if (NoBots.Any())
+            {
+                NoBots.Kick();
+            }
+
+            return;
+        }
+
+        var bots = Utilities.GetPlayers().Count(player => player is { IsValid: true, IsBot: true, IsHLTV: false });
+
+        // The deathmatch cfg brings a whole lobby of them on a map load.
+        if (bots > 1)
+        {
+            Server.ExecuteCommand("bot_quota_mode normal;bot_quota 1");
+            return;
+        }
+
+        var now = Server.CurrentTime;
+
+        if (bots == 1 || now - _botAsked < BotJoinGrace)
+        {
+            return;
+        }
+
+        _botAsked = now;
+        Server.ExecuteCommand($"bot_difficulty {BotDifficulty};bot_quota_mode normal;bot_join_team any;bot_quota 1");
+        Chat.To(humans[0], "Nobody else is here yet — you'll duel an expert bot until someone joins.");
     }
 
     private static bool IsAlive(CCSPlayerController player) =>
@@ -311,9 +371,9 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         _live = true;
 
-        foreach (var human in Players.Humans())
+        foreach (var duelist in Utilities.GetPlayers().Where(IsDuelist))
         {
-            MakeFree(human.Slot);
+            MakeFree(duelist.Slot);
         }
 
         Match();
@@ -321,6 +381,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
     private void Tick()
     {
+        UpdateBot();
+
         if (!_live)
         {
             return;
@@ -495,7 +557,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         pawn.Teleport(spot.Origin, spot.Angles, new Vector(0, 0, 0));
         Heal(pawn);
 
-        var preferences = _preferences.For(player.SteamID);
+        var preferences = player.IsBot ? BotPreferences : _preferences.For(player.SteamID);
         player.RemoveWeapons();
         player.GiveNamedItem("weapon_knife");
 
@@ -786,7 +848,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
     // Elo: beating a stronger player moves both further than beating a weaker one.
     private int Rate(int winner, int loser)
     {
-        if (PlayerAt(winner) is not { } won || PlayerAt(loser) is not { } lost)
+        // A bot is practice, not a result.
+        if (PlayerAt(winner) is not { IsBot: false } won || PlayerAt(loser) is not { IsBot: false } lost)
         {
             return 0;
         }
@@ -810,7 +873,9 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         var (mine, theirs) = Score(slot, opponent);
         var name = PlayerAt(opponent)?.PlayerName ?? "your opponent";
-        var rating = $"rating {(int)Math.Round(Rating(slot))} ({(change >= 0 ? "+" : "")}{change})";
+        var rating = IsBot(opponent)
+            ? "a bot, so your rating stays"
+            : $"rating {(int)Math.Round(Rating(slot))} ({(change >= 0 ? "+" : "")}{change})";
 
         Chat.To(
             player,
@@ -830,6 +895,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
 
         Forget(player!.Slot);
+        Server.NextFrame(UpdateBot);
 
         AddTimer(5f, () =>
         {
@@ -918,7 +984,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
     }
 
     private PlayerPreferences? Preferences(int slot) =>
-        PlayerAt(slot) is { } player ? _preferences.For(player.SteamID) : null;
+        PlayerAt(slot) is { IsBot: false } player ? _preferences.For(player.SteamID) : null;
 
     private string Tag(Duel duel, int slot)
     {
@@ -986,7 +1052,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         foreach (var (slot, free) in _free)
         {
-            if (!_banner.Showing(slot) && PlayerAt(slot) is { } player)
+            if (!_banner.Showing(slot) && PlayerAt(slot) is { IsBot: false } player)
             {
                 var where = free.Arena is int arena ? $"<font color='#f5a524'>ARENA {arena + 1}</font> · " : "";
                 player.PrintToCenterHtml($"{where}Finding your next opponent…<br>Rating {(int)Math.Round(Rating(slot))}", 2);
@@ -996,7 +1062,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
     private void ShowScore(Duel duel, int slot)
     {
-        if (_banner.Showing(slot) || PlayerAt(slot) is not { } player)
+        if (_banner.Showing(slot) || PlayerAt(slot) is not { IsBot: false } player)
         {
             return;
         }
