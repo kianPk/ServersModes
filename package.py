@@ -10,8 +10,12 @@ PLUGINS = {
     "ServersDm": "servers-dm",
     "ServersBhop": "servers-bhop",
     "Servers2x2": "servers-2x2",
+    "ServersAwp": "servers-awp",
 }
 version = sys.argv[1] if len(sys.argv) > 1 else "1.0.0"
+# Further arguments pick the plugins to package; none packages them all.
+only = set(sys.argv[2:])
+PLUGINS = {plugin: slug for plugin, slug in PLUGINS.items() if not only or plugin in only}
 dist = ROOT / "dist"
 dist.mkdir(exist_ok=True)
 

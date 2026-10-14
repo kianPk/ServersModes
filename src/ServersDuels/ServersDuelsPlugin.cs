@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.5.3";
+    public override string ModuleVersion => "1.5.4";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, with Faceit-style levels on TAB.";
 
@@ -45,9 +45,6 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
     // Deathmatch respawns within a couple of seconds; past this it is done by hand.
     private const float RespawnGrace = 5f;
-
-    private const double StartRating = 1000;
-    private const double RatingStep = 32;
 
     private sealed class Duel
     {
@@ -87,8 +84,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
     private readonly HashSet<int> _afk = new();
     private bool _live;
 
-    // By SteamID, for as long as the server runs: a map change keeps the order.
-    private readonly Dictionary<ulong, double> _ratings = new();
+    // Elo is kept on the api so a restart does not wipe Faceit levels.
+    private SectionRatings _ratings = null!;
 
     // Wins between two players on this map, keyed by their SteamIDs in order:
     // each pair keeps its own score, as the teams' score means nothing here.
@@ -98,6 +95,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
     {
         Chat.Tag = "Duels";
         _preferences = new PreferenceStore(Path.Combine(ModuleDirectory, "preferences.json"));
+        _ratings = new SectionRatings(Logger, "duels");
 
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "duels", Maps, 4, MapEnd.Manual);
@@ -124,6 +122,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         AddCommandListener("jointeam", OnJoinTeam);
         AddTimer(1f, Tick, TimerFlags.REPEAT);
         AddTimer(1f, EnforceLevels, TimerFlags.REPEAT);
+        AddTimer(15f, () => _ratings.Flush(NameOf), TimerFlags.REPEAT);
         ApplyRules();
 
         if (hotReload)
@@ -345,7 +344,10 @@ public sealed class ServersDuelsPlugin : BasePlugin
     }
 
     private double Rating(int slot) =>
-        PlayerAt(slot) is { } player && _ratings.TryGetValue(player.SteamID, out var rating) ? rating : StartRating;
+        PlayerAt(slot) is { } player ? _ratings.Get(player.SteamID) : SectionRatings.Start;
+
+    private string? NameOf(ulong steamId) =>
+        Players.Humans().FirstOrDefault(player => player.SteamID == steamId)?.PlayerName;
 
     private void Match()
     {
@@ -799,16 +801,11 @@ public sealed class ServersDuelsPlugin : BasePlugin
             return 0;
         }
 
-        var winnerRating = Rating(winner);
-        var loserRating = Rating(loser);
-        var expected = 1 / (1 + Math.Pow(10, (loserRating - winnerRating) / 400));
-        var change = RatingStep * (1 - expected);
-
-        _ratings[won.SteamID] = winnerRating + change;
-        _ratings[lost.SteamID] = loserRating - change;
+        var change = _ratings.ApplyDuel(won.SteamID, lost.SteamID);
         ApplyLevel(won);
         ApplyLevel(lost);
-        return (int)Math.Round(change);
+        _ratings.Flush(NameOf);
+        return change;
     }
 
     private void ApplyLevel(CCSPlayerController player)
@@ -865,14 +862,14 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
 
         Forget(player!.Slot);
-        AddTimer(1f, () => ApplyLevel(player), TimerFlags.STOP_ON_MAPCHANGE);
-
-        AddTimer(5f, () =>
+        _ratings.Fetch([player!.SteamID], () =>
         {
+            ApplyLevel(player);
             var level = ScoreboardLevel.FromElo(Rating(player.Slot));
+            var rating = (int)Math.Round(Rating(player.Slot));
             Chat.To(player, $"Welcome to {ChatColors.Gold}Duels{ChatColors.Default}: every kill brings your next opponent right away, matched to your level.");
-            Chat.To(player, $"Your level on TAB is {ChatColors.Gold}{level}{ChatColors.Default} · {ChatColors.Green}!guns{ChatColors.Default} · {ChatColors.Green}!rounds{ChatColors.Default} · {ChatColors.Green}!queue{ChatColors.Default} · {ChatColors.Green}!afk");
-        }, TimerFlags.STOP_ON_MAPCHANGE);
+            Chat.To(player, $"Level {ChatColors.Gold}{level}{ChatColors.Default} · rating {ChatColors.Gold}{rating}{ChatColors.Default} · {ChatColors.Green}!guns{ChatColors.Default} · {ChatColors.Green}!rounds{ChatColors.Default} · {ChatColors.Green}!queue{ChatColors.Default} · {ChatColors.Green}!afk");
+        });
 
         return HookResult.Continue;
     }
@@ -882,6 +879,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         if (@event.Userid is { IsValid: true } player)
         {
             Forget(player.Slot);
+            _ratings.Flush(NameOf);
         }
 
         return HookResult.Continue;

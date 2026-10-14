@@ -23,9 +23,9 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.8.3";
+    public override string ModuleVersion => "1.8.4";
     public override string ModuleAuthor => "kian";
-    public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
+    public override string ModuleDescription => "Free-for-all deathmatch with !guns, Faceit-style levels on TAB, and the map rotation.";
 
     private static readonly ServerMap[] Maps =
     [
@@ -60,6 +60,7 @@ public sealed class ServersDmPlugin : BasePlugin
     private static readonly string[] BotRifles = ["weapon_ak47", "weapon_m4a1", "weapon_m4a1_silencer", "weapon_ak47", "weapon_awp"];
 
     private LoadoutStore _loadouts = null!;
+    private SectionRatings _ratings = null!;
     private readonly Dictionary<int, float> _deadSince = new();
 
     // Buying is open everywhere and the wallet never runs dry.
@@ -78,6 +79,7 @@ public sealed class ServersDmPlugin : BasePlugin
     {
         Chat.Tag = "DM";
         _loadouts = new LoadoutStore(Path.Combine(ModuleDirectory, "loadouts.json"));
+        _ratings = new SectionRatings(Logger, "dm");
 
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "dm", Maps, 5, MapEnd.Manual);
@@ -132,8 +134,11 @@ public sealed class ServersDmPlugin : BasePlugin
         RegisterEventHandler<EventPlayerDeath>(OnDeath);
         RegisterEventHandler<EventPlayerConnectFull>(OnConnect);
         RegisterEventHandler<EventPlayerDisconnect>(OnDisconnect);
+        RegisterEventHandler<EventPlayerSpawn>(OnSpawnLevel);
         RegisterListener<Listeners.OnEntityTakeDamagePre>(OnTakeDamage);
         AddTimer(0.5f, RespawnDue, TimerFlags.REPEAT);
+        AddTimer(1f, EnforceLevels, TimerFlags.REPEAT);
+        AddTimer(15f, () => _ratings.Flush(NameOf), TimerFlags.REPEAT);
 
         var csgo = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "..", ".."));
         _hasBotTree = File.Exists(Path.Combine(csgo, BotTree));
@@ -340,6 +345,14 @@ public sealed class ServersDmPlugin : BasePlugin
             {
                 Server.NextFrame(() => GiveHealthshot(attacker, streak));
             }
+
+            // Faceit Elo only moves on human vs human; bot kills stay vanity.
+            if (Players.IsHuman(victim))
+            {
+                _ratings.ApplyDuel(attacker.SteamID, victim!.SteamID);
+                ApplyLevel(attacker);
+                ApplyLevel(victim);
+            }
         }
 
         return HookResult.Continue;
@@ -439,16 +452,19 @@ public sealed class ServersDmPlugin : BasePlugin
             return HookResult.Continue;
         }
 
-        AddTimer(5f, () =>
+        _ratings.Fetch([player!.SteamID], () =>
         {
-            if (!player!.IsValid)
+            if (!player.IsValid)
             {
                 return;
             }
 
+            ApplyLevel(player);
+            var level = ScoreboardLevel.FromElo(_ratings.Get(player.SteamID));
+            var rating = (int)Math.Round(_ratings.Get(player.SteamID));
             Chat.To(player, $"Welcome to {ChatColors.Gold}Deathmatch{ChatColors.Default}: health, armour and ammo back on every kill, a Medi-Shot for every {HealthshotStreak} kills without dying. Buy anything, anywhere: what you buy is what you spawn with.");
-            Chat.To(player, $"{ChatColors.Green}!guns{ChatColors.Default} weapons · {ChatColors.Green}!hs{ChatColors.Default} headshots only · {ChatColors.Green}!sounds{ChatColors.Default} kill sounds");
-        }, TimerFlags.STOP_ON_MAPCHANGE);
+            Chat.To(player, $"Level {ChatColors.Gold}{level}{ChatColors.Default} · rating {ChatColors.Gold}{rating}{ChatColors.Default} · {ChatColors.Green}!guns{ChatColors.Default} · {ChatColors.Green}!hs{ChatColors.Default} · {ChatColors.Green}!sounds{ChatColors.Default}");
+        });
 
         return HookResult.Continue;
     }
@@ -459,10 +475,49 @@ public sealed class ServersDmPlugin : BasePlugin
         {
             _deadSince.Remove(player.Slot);
             _streaks.Remove(player.Slot);
+            _ratings.Flush(NameOf);
         }
 
         return HookResult.Continue;
     }
+
+    private HookResult OnSpawnLevel(EventPlayerSpawn @event, GameEventInfo info)
+    {
+        if (Players.IsHuman(@event.Userid))
+        {
+            ApplyLevel(@event.Userid!);
+        }
+
+        return HookResult.Continue;
+    }
+
+    private void ApplyLevel(CCSPlayerController player)
+    {
+        if (!Players.IsHuman(player))
+        {
+            return;
+        }
+
+        ScoreboardLevel.Apply(player, ScoreboardLevel.FromElo(_ratings.Get(player.SteamID)));
+    }
+
+    private void EnforceLevels()
+    {
+        var any = false;
+        foreach (var player in Players.Humans())
+        {
+            ApplyLevel(player);
+            any = true;
+        }
+
+        if (any)
+        {
+            ScoreboardLevel.RevealAll();
+        }
+    }
+
+    private string? NameOf(ulong steamId) =>
+        Players.Humans().FirstOrDefault(player => player.SteamID == steamId)?.PlayerName;
 
     private void OpenPrimaries(CCSPlayerController player)
     {
