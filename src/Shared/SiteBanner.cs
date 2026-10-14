@@ -14,7 +14,7 @@ public sealed class SiteBanner
     private static readonly TimeSpan Length = TimeSpan.FromSeconds(15);
     private const float AdvertEvery = 120f;
 
-    private readonly string? _site = Site();
+    private readonly string? _site = SiteHost.Current();
     private readonly HashSet<ulong> _seen = new();
     private readonly Dictionary<int, (DateTime From, DateTime Until)> _showing = new();
 
@@ -95,29 +95,4 @@ public sealed class SiteBanner
         }
     }
 
-    private static string? Site()
-    {
-        if (Host(Environment.GetEnvironmentVariable("WEB_DOMAIN")) is { } web)
-        {
-            return web;
-        }
-
-        return Host(Environment.GetEnvironmentVariable("API_DOMAIN")) is { } api && api.StartsWith("api.")
-            ? api["api.".Length..]
-            : null;
-    }
-
-    private static string? Host(string? value)
-    {
-        value = value?.Trim();
-
-        if (string.IsNullOrEmpty(value))
-        {
-            return null;
-        }
-
-        return Uri.TryCreate(value.Contains("://") ? value : $"https://{value}", UriKind.Absolute, out var uri)
-            ? uri.Host
-            : null;
-    }
 }

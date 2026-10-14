@@ -21,7 +21,7 @@ namespace ServersModes.Bhop;
 public sealed partial class ServersBhopPlugin : BasePlugin
 {
     public override string ModuleName => "Servers BHOP";
-    public override string ModuleVersion => "1.2.1";
+    public override string ModuleVersion => "1.2.2";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Bunny hop with a timer and records, on a map only an admin changes.";
 
@@ -89,6 +89,7 @@ public sealed partial class ServersBhopPlugin : BasePlugin
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "bhop", Maps, 5, MapEnd.Manual);
         _banner = new SiteBanner(this);
+        SiteClanTag.Register(this);
         NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);

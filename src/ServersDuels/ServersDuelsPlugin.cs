@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.5.2";
+    public override string ModuleVersion => "1.5.3";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, with Faceit-style levels on TAB.";
 
@@ -103,6 +103,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _ = new MapVote(this, words, "duels", Maps, 4, MapEnd.Manual);
         _sounds = new ArenaSounds(this, Logger, ArenaOf);
         _banner = new SiteBanner(this);
+        SiteClanTag.Register(this);
         NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);
@@ -689,10 +690,11 @@ public sealed class ServersDuelsPlugin : BasePlugin
         });
     }
 
-    private static void Tagged(CCSPlayerController player, string tag)
+    // Arena / queue / AFK used to overwrite the clan tag; the site address
+    // stays there instead, and status still shows in chat and the HUD.
+    private static void Tagged(CCSPlayerController player, string _status = "")
     {
-        player.Clan = tag;
-        Utilities.SetStateChanged(player, "CCSPlayerController", "m_szClan");
+        SiteClanTag.Apply(player);
     }
 
     private HookResult OnDeath(EventPlayerDeath @event, GameEventInfo info)
