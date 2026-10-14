@@ -9,9 +9,9 @@ namespace ServersModes.Awp;
 public sealed class ServersAwpPlugin : BasePlugin
 {
     public override string ModuleName => "Servers AWP";
-    public override string ModuleVersion => "1.3.0";
+    public override string ModuleVersion => "1.4.0";
     public override string ModuleAuthor => "kian";
-    public override string ModuleDescription => "AWP-only rounds, team against team, on a map only an admin changes.";
+    public override string ModuleDescription => "AWP-only deathmatch, everyone against everyone, on a map only an admin changes.";
 
     private static readonly ServerMap[] Maps =
     [
@@ -35,7 +35,35 @@ public sealed class ServersAwpPlugin : BasePlugin
         words.Add(this, "spec", "Watch instead of playing", (player, _) => player.ChangeTeam(CsTeam.Spectator));
 
         RegisterEventHandler<EventPlayerSpawn>(OnSpawn);
+        RegisterEventHandler<EventPlayerDeath>(OnDeath);
         RegisterEventHandler<EventPlayerConnectFull>(OnConnect);
+    }
+
+    // The game respawns the dead (mp_respawn_on_death_*); a kill gives the
+    // killer health and armour back so the next fight starts even.
+    private HookResult OnDeath(EventPlayerDeath @event, GameEventInfo info)
+    {
+        var attacker = @event.Attacker;
+
+        if (attacker is not { IsValid: true } || attacker == @event.Userid)
+        {
+            return HookResult.Continue;
+        }
+
+        Server.NextFrame(() =>
+        {
+            if (!attacker.IsValid || attacker.PlayerPawn.Value is not { LifeState: (byte)LifeState_t.LIFE_ALIVE } pawn)
+            {
+                return;
+            }
+
+            pawn.Health = 100;
+            Utilities.SetStateChanged(pawn, "CBaseEntity", "m_iHealth");
+            pawn.ArmorValue = 100;
+            Utilities.SetStateChanged(pawn, "CCSPlayerPawn", "m_ArmorValue");
+        });
+
+        return HookResult.Continue;
     }
 
     // The cfg already hands out an AWP; this makes the loadout exact, whatever
@@ -96,7 +124,7 @@ public sealed class ServersAwpPlugin : BasePlugin
 
         AddTimer(5f, () =>
         {
-            Chat.To(player!, $"Welcome to {ChatColors.Gold}AWP{ChatColors.Default}: team against team, AWP and knife only, free armour, unlimited ammo.");
+            Chat.To(player!, $"Welcome to {ChatColors.Gold}AWP{ChatColors.Default}: deathmatch, everyone against everyone, AWP and knife only. You respawn straight away and every kill gives your health back.");
             Chat.To(player!, $"{ChatColors.Green}!rs{ChatColors.Default} resets your score, {ChatColors.Green}!spec{ChatColors.Default} lets you watch.");
         }, TimerFlags.STOP_ON_MAPCHANGE);
 
