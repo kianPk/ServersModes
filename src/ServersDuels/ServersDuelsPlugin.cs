@@ -20,9 +20,9 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.5.1";
+    public override string ModuleVersion => "1.5.2";
     public override string ModuleAuthor => "kian";
-    public override string ModuleDescription => "Independent 1v1 arenas paired by rating, on a map only an admin changes.";
+    public override string ModuleDescription => "Independent 1v1 arenas paired by rating, with Faceit-style levels on TAB.";
 
     // Until the pool kept on the site arrives.
     private static readonly ServerMap[] Maps =
@@ -122,6 +122,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         RegisterEventHandler<EventPlayerSpawn>(OnSpawn);
         AddCommandListener("jointeam", OnJoinTeam);
         AddTimer(1f, Tick, TimerFlags.REPEAT);
+        AddTimer(1f, EnforceLevels, TimerFlags.REPEAT);
         ApplyRules();
 
         if (hotReload)
@@ -177,6 +178,8 @@ public sealed class ServersDuelsPlugin : BasePlugin
                 {
                     ClearImmunity(pawn);
                 }
+
+                ApplyLevel(player!);
             });
         }
 
@@ -801,7 +804,34 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         _ratings[won.SteamID] = winnerRating + change;
         _ratings[lost.SteamID] = loserRating - change;
+        ApplyLevel(won);
+        ApplyLevel(lost);
         return (int)Math.Round(change);
+    }
+
+    private void ApplyLevel(CCSPlayerController player)
+    {
+        if (!Players.IsHuman(player))
+        {
+            return;
+        }
+
+        ScoreboardLevel.Apply(player, ScoreboardLevel.FromElo(Rating(player.Slot)));
+    }
+
+    private void EnforceLevels()
+    {
+        var any = false;
+        foreach (var player in Players.Humans())
+        {
+            ApplyLevel(player);
+            any = true;
+        }
+
+        if (any)
+        {
+            ScoreboardLevel.RevealAll();
+        }
     }
 
     private void Tell(int slot, int opponent, bool won, int change)
@@ -833,11 +863,13 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
 
         Forget(player!.Slot);
+        AddTimer(1f, () => ApplyLevel(player), TimerFlags.STOP_ON_MAPCHANGE);
 
         AddTimer(5f, () =>
         {
+            var level = ScoreboardLevel.FromElo(Rating(player.Slot));
             Chat.To(player, $"Welcome to {ChatColors.Gold}Duels{ChatColors.Default}: every kill brings your next opponent right away, matched to your level.");
-            Chat.To(player, $"{ChatColors.Green}!guns{ChatColors.Default} weapons · {ChatColors.Green}!rounds{ChatColors.Default} round types · {ChatColors.Green}!queue{ChatColors.Default} · {ChatColors.Green}!afk");
+            Chat.To(player, $"Your level on TAB is {ChatColors.Gold}{level}{ChatColors.Default} · {ChatColors.Green}!guns{ChatColors.Default} · {ChatColors.Green}!rounds{ChatColors.Default} · {ChatColors.Green}!queue{ChatColors.Default} · {ChatColors.Green}!afk");
         }, TimerFlags.STOP_ON_MAPCHANGE);
 
         return HookResult.Continue;
@@ -1091,6 +1123,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
     {
         var slot = player.Slot;
         var rating = (int)Math.Round(Rating(slot));
+        var level = ScoreboardLevel.FromElo(Rating(slot));
 
         if (_afk.Contains(slot))
         {
@@ -1100,11 +1133,11 @@ public sealed class ServersDuelsPlugin : BasePlugin
 
         if (_duelOf.TryGetValue(slot, out var duel))
         {
-            Chat.To(player, $"You're in arena {ChatColors.Gold}{duel.Arena + 1}{ChatColors.Default} of {_arenas.Count} · rating {ChatColors.Gold}{rating}");
+            Chat.To(player, $"You're in arena {ChatColors.Gold}{duel.Arena + 1}{ChatColors.Default} of {_arenas.Count} · level {ChatColors.Gold}{level}{ChatColors.Default} · rating {ChatColors.Gold}{rating}");
             return;
         }
 
-        Chat.To(player, $"Finding your next opponent · rating {ChatColors.Gold}{rating}{ChatColors.Default} · {_free.Count} free, {_duels.Count} duels running.");
+        Chat.To(player, $"Finding your next opponent · level {ChatColors.Gold}{level}{ChatColors.Default} · rating {ChatColors.Gold}{rating}{ChatColors.Default} · {_free.Count} free, {_duels.Count} duels running.");
     }
 
     private void ToggleAfk(CCSPlayerController player) => SetAfk(player, !_afk.Contains(player.Slot));
