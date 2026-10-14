@@ -12,6 +12,7 @@ public sealed class SiteBanner
 {
     private static readonly TimeSpan Delay = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan Length = TimeSpan.FromSeconds(15);
+    private const float AdvertEvery = 120f;
 
     private readonly string? _site = Site();
     private readonly HashSet<ulong> _seen = new();
@@ -27,6 +28,15 @@ public sealed class SiteBanner
         plugin.RegisterEventHandler<EventPlayerConnectFull>(OnConnect);
         plugin.RegisterEventHandler<EventPlayerDisconnect>(OnDisconnect);
         plugin.AddTimer(1f, Show, TimerFlags.REPEAT);
+        plugin.AddTimer(AdvertEvery, Advertise, TimerFlags.REPEAT);
+    }
+
+    private void Advertise()
+    {
+        if (Players.Humans().Any())
+        {
+            Chat.All($"Ranked matches, stats, Battle Pass and skins: {ChatColors.Gold}{_site}");
+        }
     }
 
     // For a plugin with a panel of its own to stand aside.

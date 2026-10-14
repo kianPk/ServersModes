@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.5.0";
+    public override string ModuleVersion => "1.5.1";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, on a map only an admin changes.";
 
@@ -103,6 +103,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _ = new MapVote(this, words, "duels", Maps, 4, MapEnd.Manual);
         _sounds = new ArenaSounds(this, Logger, ArenaOf);
         _banner = new SiteBanner(this);
+        NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);
         _ = new IdleKick(this, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5));

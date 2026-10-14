@@ -23,7 +23,7 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.8.1";
+    public override string ModuleVersion => "1.8.2";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, rewards on kill and the map rotation.";
 
@@ -82,6 +82,7 @@ public sealed class ServersDmPlugin : BasePlugin
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "dm", Maps, 5, MapEnd.Manual);
         _ = new SiteBanner(this);
+        NoChickens.Register(this);
         NoHealthshot.Register(this, player =>
             _healthshotGiven.TryGetValue(player.Slot, out var given) && Server.CurrentTime - given < 1f);
         _ = new KillFeedback(this, player => _loadouts.For(player.SteamID).KillSounds);

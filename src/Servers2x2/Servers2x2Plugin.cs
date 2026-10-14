@@ -8,7 +8,7 @@ namespace ServersModes.Wingman;
 public sealed class Servers2x2Plugin : BasePlugin
 {
     public override string ModuleName => "Servers 2x2";
-    public override string ModuleVersion => "1.1.0";
+    public override string ModuleVersion => "1.1.1";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "2x2 (Wingman) on a map only an admin changes.";
 
@@ -29,6 +29,7 @@ public sealed class Servers2x2Plugin : BasePlugin
         // A finished match starts over on the same map (mp_match_end_restart).
         _ = new MapVote(this, words, "2x2", Maps, 5, MapEnd.Manual);
         _ = new SiteBanner(this);
+        NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);
 
