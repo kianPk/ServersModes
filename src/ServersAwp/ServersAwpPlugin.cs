@@ -9,7 +9,7 @@ namespace ServersModes.Awp;
 public sealed class ServersAwpPlugin : BasePlugin
 {
     public override string ModuleName => "Servers AWP";
-    public override string ModuleVersion => "1.4.0";
+    public override string ModuleVersion => "1.4.1";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "AWP-only deathmatch, everyone against everyone, on a map only an admin changes.";
 
@@ -36,6 +36,7 @@ public sealed class ServersAwpPlugin : BasePlugin
 
         RegisterEventHandler<EventPlayerSpawn>(OnSpawn);
         RegisterEventHandler<EventPlayerDeath>(OnDeath);
+        RegisterEventHandler<EventItemPickup>(OnItemPickup);
         RegisterEventHandler<EventPlayerConnectFull>(OnConnect);
     }
 
@@ -67,7 +68,8 @@ public sealed class ServersAwpPlugin : BasePlugin
     }
 
     // The cfg already hands out an AWP; this makes the loadout exact, whatever
-    // the map places or gives (a C4 on a map with bomb sites).
+    // the map places or gives (a C4 on a map with bomb sites), and clears the
+    // deathmatch INVULNERABLE box that mp_respawn_immunitytime can still grant.
     private HookResult OnSpawn(EventPlayerSpawn @event, GameEventInfo info)
     {
         var player = @event.Userid;
@@ -77,20 +79,93 @@ public sealed class ServersAwpPlugin : BasePlugin
             return HookResult.Continue;
         }
 
-        AddTimer(0.1f, () =>
+        AddTimer(0.1f, () => EnforceLoadout(player), TimerFlags.STOP_ON_MAPCHANGE);
+
+        return HookResult.Continue;
+    }
+
+    // A pickup from the ground or a give from another plugin must not leave
+    // the player holding anything but an AWP and a knife.
+    private HookResult OnItemPickup(EventItemPickup @event, GameEventInfo info)
+    {
+        var player = @event.Userid;
+
+        if (!Players.IsHuman(player))
         {
-            if (!player.IsValid || player.PlayerPawn.Value is not { LifeState: (byte)LifeState_t.LIFE_ALIVE })
+            return HookResult.Continue;
+        }
+
+        Server.NextFrame(() => EnforceLoadout(player!));
+
+        return HookResult.Continue;
+    }
+
+    private static void EnforceLoadout(CCSPlayerController player)
+    {
+        if (!player.IsValid || player.PlayerPawn.Value is not { LifeState: (byte)LifeState_t.LIFE_ALIVE } pawn)
+        {
+            return;
+        }
+
+        ClearImmunity(pawn);
+
+        if (pawn.WeaponServices is { } weapons)
+        {
+            var onlyAwpAndKnife = true;
+            foreach (var handle in weapons.MyWeapons)
+            {
+                if (handle.Value is not { IsValid: true } weapon)
+                {
+                    continue;
+                }
+
+                var name = weapon.DesignerName;
+                if (name is "weapon_awp" || name.Contains("knife", StringComparison.OrdinalIgnoreCase) || name is "weapon_bayonet")
+                {
+                    continue;
+                }
+
+                onlyAwpAndKnife = false;
+                break;
+            }
+
+            if (onlyAwpAndKnife && HasDesigner(weapons, "weapon_awp"))
             {
                 return;
             }
+        }
 
-            player.RemoveWeapons();
-            player.GiveNamedItem("weapon_knife");
-            player.GiveNamedItem("weapon_awp");
-            player.GiveNamedItem("item_assaultsuit");
-        }, TimerFlags.STOP_ON_MAPCHANGE);
+        player.RemoveWeapons();
+        player.GiveNamedItem("weapon_knife");
+        player.GiveNamedItem("weapon_awp");
+        player.GiveNamedItem("item_assaultsuit");
+    }
 
-        return HookResult.Continue;
+    private static bool HasDesigner(CPlayer_WeaponServices weapons, string designer)
+    {
+        foreach (var handle in weapons.MyWeapons)
+        {
+            if (handle.Value is { IsValid: true } weapon &&
+                weapon.DesignerName.Equals(designer, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Deathmatch's spawn immunity (the INVULNERABLE box), should a spawn have
+    // granted it despite mp_respawn_immunitytime.
+    private static void ClearImmunity(CCSPlayerPawn pawn)
+    {
+        if (pawn.GunGameImmunity)
+        {
+            pawn.GunGameImmunity = false;
+            pawn.ImmuneToGunGameDamageTime = 0;
+            Utilities.SetStateChanged(pawn, "CCSPlayerPawn", "m_bGunGameImmunity");
+            Utilities.SetStateChanged(pawn, "CCSPlayerPawn", "m_fImmuneToGunGameDamageTime");
+        }
     }
 
     private static void ResetScore(CCSPlayerController player)
