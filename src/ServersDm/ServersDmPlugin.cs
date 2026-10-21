@@ -84,7 +84,7 @@ public sealed class ServersDmPlugin : BasePlugin
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "dm", Maps, 5, MapEnd.Manual);
         _ = new SiteBanner(this);
-        SiteClanTag.Register(this);
+        SiteClanTag.Register(this, Logger);
         NoChickens.Register(this);
         NoHealthshot.Register(this, player =>
             _healthshotGiven.TryGetValue(player.Slot, out var given) && Server.CurrentTime - given < 1f);

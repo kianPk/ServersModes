@@ -1,6 +1,7 @@
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
+using Microsoft.Extensions.Logging;
 using ServersModes.Shared;
 
 namespace ServersModes.Wingman;
@@ -29,7 +30,7 @@ public sealed class Servers2x2Plugin : BasePlugin
         // A finished match starts over on the same map (mp_match_end_restart).
         _ = new MapVote(this, words, "2x2", Maps, 5, MapEnd.Manual);
         _ = new SiteBanner(this);
-        SiteClanTag.Register(this);
+        SiteClanTag.Register(this, Logger);
         NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);

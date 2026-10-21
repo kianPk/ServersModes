@@ -101,7 +101,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _ = new MapVote(this, words, "duels", Maps, 4, MapEnd.Manual);
         _sounds = new ArenaSounds(this, Logger, ArenaOf);
         _banner = new SiteBanner(this);
-        SiteClanTag.Register(this);
+        SiteClanTag.Register(this, Logger);
         NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);

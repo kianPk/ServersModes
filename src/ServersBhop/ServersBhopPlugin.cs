@@ -89,7 +89,7 @@ public sealed partial class ServersBhopPlugin : BasePlugin
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "bhop", Maps, 5, MapEnd.Manual);
         _banner = new SiteBanner(this);
-        SiteClanTag.Register(this);
+        SiteClanTag.Register(this, Logger);
         NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);

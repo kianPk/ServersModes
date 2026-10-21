@@ -2,6 +2,7 @@ using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
+using Microsoft.Extensions.Logging;
 using ServersModes.Shared;
 
 namespace ServersModes.Awp;
@@ -28,7 +29,7 @@ public sealed class ServersAwpPlugin : BasePlugin
         var words = new ChatWords(this);
         _ = new MapVote(this, words, "awp", Maps, 4, MapEnd.Manual);
         _ = new SiteBanner(this);
-        SiteClanTag.Register(this);
+        SiteClanTag.Register(this, Logger);
         NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);
