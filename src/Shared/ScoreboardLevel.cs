@@ -5,9 +5,9 @@ using CounterStrikeSharp.API.Modules.UserMessages;
 
 namespace ServersModes.Shared;
 
-// Faceit-style levels 1–10 on the TAB scoreboard. Rank[5] is the pin slot;
-// with the cs2-FaceitLevels workshop addon (3724637448) those pins render as
-// the Faceit level badges. Without the addon they still show as stock medals.
+// Site level 1–10 on the TAB scoreboard. Rank[5] is the pin slot; with the
+// cs2-FaceitLevels workshop addon (3724637448) those pins render as level
+// badges. The number is the site XP level, the same one shown on the website.
 public static class ScoreboardLevel
 {
     // Pin IDs the FaceitLevels workshop remaps to level images (Staaar0 mapping).

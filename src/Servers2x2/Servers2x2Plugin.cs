@@ -9,7 +9,7 @@ namespace ServersModes.Wingman;
 public sealed class Servers2x2Plugin : BasePlugin
 {
     public override string ModuleName => "Servers 2x2";
-    public override string ModuleVersion => "1.1.5";
+    public override string ModuleVersion => "1.1.6";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "2x2 (Wingman) on a map only an admin changes.";
 
@@ -32,6 +32,7 @@ public sealed class Servers2x2Plugin : BasePlugin
         _ = new SiteBanner(this);
         SiteClanTag.Register(this, Logger);
         ClubChallenges.Register(this, Logger, "2x2");
+        SiteLevel.Register(this, Logger, "2x2");
         NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);
@@ -51,6 +52,7 @@ public sealed class Servers2x2Plugin : BasePlugin
         foreach (var player in Players.Humans().Where(player => player.Team == winner))
         {
             ClubChallenges.RecordMetric(player, "wins");
+            SiteLevel.Award(player, "round_win");
         }
 
         return HookResult.Continue;

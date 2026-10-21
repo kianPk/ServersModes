@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.5.7";
+    public override string ModuleVersion => "1.5.8";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, with Faceit-style levels on TAB.";
 
@@ -103,6 +103,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _banner = new SiteBanner(this);
         SiteClanTag.Register(this, Logger);
         ClubChallenges.Register(this, Logger, "duels");
+        SiteLevel.Register(this, Logger, "duels");
         NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);
@@ -807,6 +808,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         }
 
         var change = _ratings.ApplyDuel(won.SteamID, lost.SteamID);
+        SiteLevel.Award(won, "round_win");
         ApplyLevel(won);
         ApplyLevel(lost);
         _ratings.Flush(NameOf);
@@ -820,7 +822,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
             return;
         }
 
-        ScoreboardLevel.Apply(player, ScoreboardLevel.FromElo(Rating(player.Slot)));
+        ScoreboardLevel.Apply(player, SiteLevel.Level(player.SteamID));
     }
 
     private void EnforceLevels()
@@ -870,7 +872,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _ratings.Fetch([player!.SteamID], () =>
         {
             ApplyLevel(player);
-            var level = ScoreboardLevel.FromElo(Rating(player.Slot));
+            var level = SiteLevel.Level(player.SteamID);
             var rating = (int)Math.Round(Rating(player.Slot));
             Chat.To(player, $"Welcome to {ChatColors.Gold}Duels{ChatColors.Default}: every kill brings your next opponent right away, matched to your level.");
             Chat.To(player, $"Level {ChatColors.Gold}{level}{ChatColors.Default} · rating {ChatColors.Gold}{rating}{ChatColors.Default} · {ChatColors.Green}!guns{ChatColors.Default} · {ChatColors.Green}!rounds{ChatColors.Default} · {ChatColors.Green}!queue{ChatColors.Default} · {ChatColors.Green}!afk");
@@ -1128,7 +1130,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
     {
         var slot = player.Slot;
         var rating = (int)Math.Round(Rating(slot));
-        var level = ScoreboardLevel.FromElo(Rating(slot));
+        var level = SiteLevel.Level(PlayerAt(slot)?.SteamID ?? 0);
 
         if (_afk.Contains(slot))
         {

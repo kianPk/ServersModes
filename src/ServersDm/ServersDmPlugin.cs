@@ -23,7 +23,7 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.8.7";
+    public override string ModuleVersion => "1.8.8";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, Faceit-style levels on TAB, and the map rotation.";
 
@@ -86,6 +86,7 @@ public sealed class ServersDmPlugin : BasePlugin
         _ = new SiteBanner(this);
         SiteClanTag.Register(this, Logger);
         ClubChallenges.Register(this, Logger, "dm");
+        SiteLevel.Register(this, Logger, "dm");
         NoChickens.Register(this);
         NoHealthshot.Register(this, player =>
             _healthshotGiven.TryGetValue(player.Slot, out var given) && Server.CurrentTime - given < 1f);
@@ -461,7 +462,7 @@ public sealed class ServersDmPlugin : BasePlugin
             }
 
             ApplyLevel(player);
-            var level = ScoreboardLevel.FromElo(_ratings.Get(player.SteamID));
+            var level = SiteLevel.Level(player.SteamID);
             var rating = (int)Math.Round(_ratings.Get(player.SteamID));
             Chat.To(player, $"Welcome to {ChatColors.Gold}Deathmatch{ChatColors.Default}: health, armour and ammo back on every kill, a Medi-Shot for every {HealthshotStreak} kills without dying. Buy anything, anywhere: what you buy is what you spawn with.");
             Chat.To(player, $"Level {ChatColors.Gold}{level}{ChatColors.Default} · rating {ChatColors.Gold}{rating}{ChatColors.Default} · {ChatColors.Green}!guns{ChatColors.Default} · {ChatColors.Green}!hs{ChatColors.Default} · {ChatColors.Green}!sounds{ChatColors.Default}");
@@ -499,7 +500,7 @@ public sealed class ServersDmPlugin : BasePlugin
             return;
         }
 
-        ScoreboardLevel.Apply(player, ScoreboardLevel.FromElo(_ratings.Get(player.SteamID)));
+        ScoreboardLevel.Apply(player, SiteLevel.Level(player.SteamID));
     }
 
     private void EnforceLevels()

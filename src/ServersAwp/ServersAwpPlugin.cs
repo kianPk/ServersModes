@@ -10,7 +10,7 @@ namespace ServersModes.Awp;
 public sealed class ServersAwpPlugin : BasePlugin
 {
     public override string ModuleName => "Servers AWP";
-    public override string ModuleVersion => "1.4.6";
+    public override string ModuleVersion => "1.4.7";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "AWP-only deathmatch, everyone against everyone, on a map only an admin changes.";
 
@@ -31,6 +31,7 @@ public sealed class ServersAwpPlugin : BasePlugin
         _ = new SiteBanner(this);
         SiteClanTag.Register(this, Logger);
         ClubChallenges.Register(this, Logger, "awp");
+        SiteLevel.Register(this, Logger, "awp");
         NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);
