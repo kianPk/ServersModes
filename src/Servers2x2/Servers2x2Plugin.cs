@@ -9,7 +9,7 @@ namespace ServersModes.Wingman;
 public sealed class Servers2x2Plugin : BasePlugin
 {
     public override string ModuleName => "Servers 2x2";
-    public override string ModuleVersion => "1.1.2";
+    public override string ModuleVersion => "1.1.3";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "2x2 (Wingman) on a map only an admin changes.";
 
