@@ -49,7 +49,7 @@ public static class ClubChallenges
         _ = Send(player!, weapon: null, noscope: false, headshot: false, metric, amount, show: true, seconds: 5);
     }
 
-    private static HookResult OnDeath(EventPlayerDeath @event, GameEventInfo _)
+    private static HookResult OnDeath(EventPlayerDeath @event, GameEventInfo info)
     {
         var attacker = @event.Attacker;
         var victim = @event.Userid;
