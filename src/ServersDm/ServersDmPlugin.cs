@@ -23,7 +23,7 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.8.5";
+    public override string ModuleVersion => "1.8.6";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, Faceit-style levels on TAB, and the map rotation.";
 
@@ -85,6 +85,7 @@ public sealed class ServersDmPlugin : BasePlugin
         _ = new MapVote(this, words, "dm", Maps, 5, MapEnd.Manual);
         _ = new SiteBanner(this);
         SiteClanTag.Register(this, Logger);
+        ClubChallenges.Register(this, Logger, "dm");
         NoChickens.Register(this);
         NoHealthshot.Register(this, player =>
             _healthshotGiven.TryGetValue(player.Slot, out var given) && Server.CurrentTime - given < 1f);

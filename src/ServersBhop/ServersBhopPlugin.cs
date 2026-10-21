@@ -21,7 +21,7 @@ namespace ServersModes.Bhop;
 public sealed partial class ServersBhopPlugin : BasePlugin
 {
     public override string ModuleName => "Servers BHOP";
-    public override string ModuleVersion => "1.2.3";
+    public override string ModuleVersion => "1.2.4";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Bunny hop with a timer and records, on a map only an admin changes.";
 
@@ -90,6 +90,7 @@ public sealed partial class ServersBhopPlugin : BasePlugin
         _ = new MapVote(this, words, "bhop", Maps, 5, MapEnd.Manual);
         _banner = new SiteBanner(this);
         SiteClanTag.Register(this, Logger);
+        ClubChallenges.Register(this, Logger, "bhop");
         NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);
@@ -392,6 +393,7 @@ public sealed partial class ServersBhopPlugin : BasePlugin
         var previous = _records.Best(map, track, player.SteamID)?.Time;
         var result = _records.Submit(map, track, player.SteamID, player.PlayerName, time);
         run.Started = null;
+        ClubChallenges.RecordMetric(player, "finishes");
 
         var shown = $"{ChatColors.Gold}{RecordStore.Format(time)}{ChatColors.Default}";
 

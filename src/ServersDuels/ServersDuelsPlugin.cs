@@ -20,7 +20,7 @@ namespace ServersModes.Duels;
 public sealed class ServersDuelsPlugin : BasePlugin
 {
     public override string ModuleName => "Servers Duels";
-    public override string ModuleVersion => "1.5.5";
+    public override string ModuleVersion => "1.5.6";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Independent 1v1 arenas paired by rating, with Faceit-style levels on TAB.";
 
@@ -102,6 +102,7 @@ public sealed class ServersDuelsPlugin : BasePlugin
         _sounds = new ArenaSounds(this, Logger, ArenaOf);
         _banner = new SiteBanner(this);
         SiteClanTag.Register(this, Logger);
+        ClubChallenges.Register(this, Logger, "duels");
         NoChickens.Register(this);
         NoHealthshot.Register(this);
         NoBots.Register(this);
@@ -724,6 +725,10 @@ public sealed class ServersDuelsPlugin : BasePlugin
         if (winner is int won)
         {
             var lost = duel.Opponent(won);
+            if (PlayerAt(won) is { } winnerPlayer)
+            {
+                ClubChallenges.RecordMetric(winnerPlayer, "wins");
+            }
             AddWin(won, lost);
             var change = Rate(won, lost);
             Tell(won, lost, true, change);
