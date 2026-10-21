@@ -36,6 +36,7 @@ public static class ClubChallenges
         }
 
         plugin.RegisterEventHandler<EventPlayerDeath>(OnDeath);
+        plugin.RegisterEventHandler<EventPlayerHurt>(OnHurt);
         plugin.AddTimer(180f, PingEveryone, TimerFlags.REPEAT);
     }
 
@@ -54,9 +55,14 @@ public static class ClubChallenges
         var attacker = @event.Attacker;
         var victim = @event.Userid;
 
-        if (Players.IsHuman(attacker) && attacker != victim)
+        if (Players.IsHuman(attacker) && attacker != victim && !SameSide(attacker, victim))
         {
             _ = Send(attacker!, @event.Weapon, @event.Noscope, @event.Headshot, null, 1, show: true, seconds: 5);
+        }
+
+        if (Players.IsHuman(@event.Assister) && @event.Assister != victim && !SameSide(@event.Assister, victim))
+        {
+            _ = Send(@event.Assister!, weapon: null, noscope: false, headshot: false, "assists", 1, show: false, seconds: 0);
         }
 
         if (Players.IsHuman(victim) && victim != attacker)
@@ -65,6 +71,30 @@ public static class ClubChallenges
         }
 
         return HookResult.Continue;
+    }
+
+    private static HookResult OnHurt(EventPlayerHurt @event, GameEventInfo info)
+    {
+        var attacker = @event.Attacker;
+        var victim = @event.Userid;
+        var damage = @event.DmgHealth;
+        if (damage <= 0 || !Players.IsHuman(attacker) || attacker == victim || SameSide(attacker, victim))
+        {
+            return HookResult.Continue;
+        }
+
+        _ = Send(attacker!, @event.Weapon, noscope: false, headshot: false, "damage", damage, show: false, seconds: 0);
+        return HookResult.Continue;
+    }
+
+    private static bool SameSide(CCSPlayerController? a, CCSPlayerController? b)
+    {
+        if (_mode is "dm" or "awp" or "duels" or "bhop")
+        {
+            return false;
+        }
+
+        return a is { TeamNum: 2 or 3 } && b is not null && a.TeamNum == b.TeamNum;
     }
 
     private static void PingEveryone()

@@ -10,7 +10,7 @@ namespace ServersModes.Awp;
 public sealed class ServersAwpPlugin : BasePlugin
 {
     public override string ModuleName => "Servers AWP";
-    public override string ModuleVersion => "1.4.5";
+    public override string ModuleVersion => "1.4.6";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "AWP-only deathmatch, everyone against everyone, on a map only an admin changes.";
 

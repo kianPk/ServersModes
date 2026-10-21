@@ -23,7 +23,7 @@ namespace ServersModes.Dm;
 public sealed class ServersDmPlugin : BasePlugin
 {
     public override string ModuleName => "Servers DM";
-    public override string ModuleVersion => "1.8.6";
+    public override string ModuleVersion => "1.8.7";
     public override string ModuleAuthor => "kian";
     public override string ModuleDescription => "Free-for-all deathmatch with !guns, Faceit-style levels on TAB, and the map rotation.";
 
