@@ -25,6 +25,11 @@ public sealed partial class MapPool
         if (!string.IsNullOrEmpty(api))
         {
             _url = $"{(api.StartsWith("http") ? api : $"https://{api}")}/hosted-servers/section-maps/{mode}";
+            var server = Environment.GetEnvironmentVariable("SERVER_ID")?.Trim();
+            if (!string.IsNullOrEmpty(server))
+            {
+                _url += $"?server_id={Uri.EscapeDataString(server)}";
+            }
         }
     }
 
