@@ -120,7 +120,7 @@ public static class ClubChallenges
         {
             var response = await Http.PostAsJsonAsync(
                 $"{_api}/clubs/challenges/events",
-                new EventBody(_mode, steamId, weapon, noscope, headshot, metric, amount),
+                new EventBody(_mode, steamId, weapon, noscope, headshot, metric, amount, ServerId()),
                 Json);
             var payload = await response.Content.ReadFromJsonAsync<EventReply>(Json);
             var rows = payload?.Progress ?? [];
@@ -142,9 +142,15 @@ public static class ClubChallenges
         var steamId = player.SteamID.ToString();
         try
         {
-            var payload = await Http.GetFromJsonAsync<LiveReply>(
-                $"{_api}/clubs/challenges/live?mode={Uri.EscapeDataString(_mode)}&steam_id={steamId}",
-                Json);
+            var server = ServerId();
+            var live =
+                $"{_api}/clubs/challenges/live?mode={Uri.EscapeDataString(_mode)}&steam_id={steamId}";
+            if (!string.IsNullOrEmpty(server))
+            {
+                live += $"&server_id={Uri.EscapeDataString(server)}";
+            }
+
+            var payload = await Http.GetFromJsonAsync<LiveReply>(live, Json);
             var rows = (payload?.Challenges ?? [])
                 .Where(row => row.Target > 0 && row.Progress < row.Target)
                 .Select(row => new Row(
@@ -205,6 +211,12 @@ public static class ClubChallenges
     private static string Html(string value) =>
         value.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
 
+    private static string? ServerId()
+    {
+        var id = Environment.GetEnvironmentVariable("SERVER_ID")?.Trim();
+        return string.IsNullOrEmpty(id) ? null : id;
+    }
+
     private static string? ApiRoot()
     {
         var api = Environment.GetEnvironmentVariable("API_DOMAIN")?.Trim().TrimEnd('/');
@@ -223,7 +235,8 @@ public static class ClubChallenges
         [property: JsonPropertyName("noscope")] bool Noscope,
         [property: JsonPropertyName("headshot")] bool Headshot,
         [property: JsonPropertyName("metric")] string? Metric,
-        [property: JsonPropertyName("amount")] int Amount);
+        [property: JsonPropertyName("amount")] int Amount,
+        [property: JsonPropertyName("server_id")] string? ServerId);
 
     private sealed record EventReply(
         [property: JsonPropertyName("progress")] List<Row>? Progress);
